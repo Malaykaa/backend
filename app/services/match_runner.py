@@ -1,0 +1,542 @@
+"""MatchRunner — job périodique : matching offres → users avec intention active.
+
+Pour chaque user éligible :
+1. Charge sa meilleure intention (UserIntent la plus récente).
+2. Embed l'intention via EmbeddingService (recherche sémantique).
+3. Recherche les top-K offres scrapées via ScrapedOfferService.
+4. Pousse un message assistant dans le thread de l'intention.
+5. Envoie une notif WhatsApp (OneMessage / Twilio) si phone + opt-in.
+6. Met à jour profile.match_last_run_at.
+
+Critères d'éligibilité (cf. _eligible_user_ids) :
+- Profile.match_notifications_enabled = TRUE
+- Au moins une UserIntent extraite < 30 jours
+- match_last_run_at + match_frequency_hours <= now (ou NULL)
+
+Le service est utilisé par scheduler.py et expose run_once() pour le run
+manuel via l'admin / les tests.
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Iterable
+
+from sqlalchemy import select, update
+from sqlalchemy.orm import Session
+
+from app.core.config import get_settings
+from app.models.chat import MessageRole
+from app.models.user import Profile, User
+from app.models.user_intent import UserIntent
+from app.repositories.chat_repo import ChatRepository
+from app.services.scraped_offer_service import ScrapedOfferService
+from app.services.whatsapp_service import whatsapp_service
+
+if TYPE_CHECKING:
+    from app.llm.base import LLMProvider
+
+logger = logging.getLogger(__name__)
+
+# Une intention plus ancienne que ça est considérée stale → on n'envoie plus
+# de matching automatique tant que l'utilisateur n'a pas remis à jour son
+# objectif (évite de spammer pour des intentions périmées).
+INTENT_MAX_AGE_DAYS = 30
+
+
+class MatchRunner:
+    def __init__(self, db: Session, llm: "LLMProvider | None" = None) -> None:
+        self.db = db
+        self.llm = llm
+        self.settings = get_settings()
+        self.offer_svc = ScrapedOfferService(db)
+        self.chat_repo = ChatRepository(db)
+
+    async def run_once(self) -> dict[str, int]:
+        """Exécute un cycle complet. Retourne des stats pour le scheduler."""
+        stats = {"eligible": 0, "matched": 0, "notified": 0, "errors": 0}
+        now = datetime.now(timezone.utc)
+
+        for user_id in self._eligible_user_ids(now):
+            stats["eligible"] += 1
+            try:
+                pushed = await self._run_for_user(user_id, now)
+                if pushed > 0:
+                    stats["matched"] += 1
+                    stats["notified"] += pushed
+            except Exception:
+                stats["errors"] += 1
+                logger.exception("MatchRunner failed for user %s", user_id)
+                self.db.rollback()
+
+        logger.info("MatchRunner: %s", stats)
+        return stats
+
+    # ── Privé ──────────────────────────────────────────────────────────────────
+
+    def _eligible_user_ids(self, now: datetime) -> list[uuid.UUID]:
+        """Calcule la liste des users à traiter à ce tick.
+
+        Évalue la fréquence personnalisée côté Python pour ne pas dupliquer
+        la logique en SQL : la table users est suffisamment petite pour que
+        ce soit OK ; passer à un index couvrant si la base grossit.
+        """
+        intent_cutoff = now - timedelta(days=INTENT_MAX_AGE_DAYS)
+        default_freq = self.settings.match_default_frequency_hours
+
+        # Sous-requête : ids des users avec au moins une intention récente.
+        users_with_intent = (
+            select(UserIntent.user_id)
+            .where(UserIntent.extracted_at >= intent_cutoff)
+            .distinct()
+            .subquery()
+        )
+        stmt = (
+            select(
+                User.id,
+                Profile.match_frequency_hours,
+                Profile.match_last_run_at,
+            )
+            .join(Profile, Profile.user_id == User.id)
+            .join(users_with_intent, users_with_intent.c.user_id == User.id)
+            .where(
+                User.is_active.is_(True),
+                Profile.match_notifications_enabled.is_(True),
+            )
+        )
+
+        eligible: list[uuid.UUID] = []
+        for user_id, freq, last_run in self.db.execute(stmt).all():
+            interval = timedelta(hours=freq if freq else default_freq)
+            if last_run is None or (now - last_run) >= interval:
+                eligible.append(user_id)
+        return eligible
+
+    async def _run_for_user(self, user_id: uuid.UUID, now: datetime) -> int:
+        """Exécute le matching pour un user. Retourne le nb d'offres poussées."""
+        intent = self._best_intent(user_id)
+        if intent is None:
+            return 0
+
+        # Vérifier la fenêtre horaire programmée par l'utilisateur.
+        # Si l'heure courante ne correspond pas → skip sans marquer le run
+        # (match_last_run_at reste inchangé ; le prochain tick re-tentera).
+        if not self._is_scheduled_time(intent, now):
+            return 0
+
+        offers = await self.offer_svc.search_for_matching(
+            intent, limit=self.settings.match_top_k,
+        )
+        if not offers:
+            self._mark_run(user_id, now)
+            self.db.commit()
+            return 0
+
+        # Vérification LLM de pertinence avant présentation à l'utilisateur.
+        # Si self.llm est None (scheduler non configuré), on passe directement.
+        if self.llm is not None:
+            offers = await _verify_relevance_llm(offers, intent, self.llm)
+            if not offers:
+                self._mark_run(user_id, now)
+                self.db.commit()
+                return 0
+
+        # 1. Poster un message assistant dans le thread de l'intention.
+        chat_body = _format_chat_message(offers)
+        interaction = _build_interaction_payload(offers)
+        self.chat_repo.add_message(
+            thread_id=intent.thread_id,
+            role=MessageRole.assistant,
+            content=chat_body,
+            payload={
+                "kind": "auto_match",
+                "offers": [o["offer_ref"] for o in offers],
+                # inject_markers (appelé sur fetch) transforme ces champs
+                # en @@PROPOSITIONS@@ et @@STEPS@@ — contextualisés selon
+                # le type dominant des offres matchées.
+                "suggestions": interaction["suggestions"],
+                "steps": interaction["steps"],
+            },
+        )
+
+        # 2. Notif WhatsApp si phone + provider configuré (skip silencieux sinon).
+        phone = self._user_phone(user_id)
+        if phone:
+            try:
+                thread_url = f"{self.settings.frontend_url.rstrip('/')}/app/chat/{intent.thread_id}"
+                await whatsapp_service.send_message(
+                    phone,
+                    _format_wa_message(offers, thread_url),
+                )
+            except Exception:
+                logger.warning(
+                    "WhatsApp notification failed for user %s — chat message kept",
+                    user_id, exc_info=True,
+                )
+                # On ne raise pas : le message en chat est déjà posé.
+
+        self._mark_run(user_id, now)
+        self.db.commit()
+        return len(offers)
+
+    def _best_intent(self, user_id: uuid.UUID) -> UserIntent | None:
+        """Dernière intention assez récente pour servir de query de matching."""
+        cutoff = datetime.now(timezone.utc) - timedelta(days=INTENT_MAX_AGE_DAYS)
+        return self.db.execute(
+            select(UserIntent)
+            .where(
+                UserIntent.user_id == user_id,
+                UserIntent.extracted_at >= cutoff,
+            )
+            .order_by(UserIntent.extracted_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+
+    def _user_phone(self, user_id: uuid.UUID) -> str | None:
+        return self.db.execute(
+            select(User.phone).where(User.id == user_id)
+        ).scalar_one_or_none()
+
+    def _mark_run(self, user_id: uuid.UUID, now: datetime) -> None:
+        self.db.execute(
+            update(Profile)
+            .where(Profile.user_id == user_id)
+            .values(match_last_run_at=now)
+        )
+
+    def _is_scheduled_time(self, intent: UserIntent, now: datetime) -> bool:
+        """Vérifie si l'heure actuelle (UTC) correspond à la fenêtre de notification.
+
+        Logique :
+        - Pas de goal_id → True  (pas de contrainte horaire)
+        - notif_mode absent ou "realtime" → True  (comportement existant inchangé)
+        - notif_mode == "scheduled" + notif_time "HH:MM" → True uniquement si
+          now.hour (UTC) == heure programmée.
+
+        Le scheduler tourne à :30 de chaque heure. Un utilisateur qui programme
+        "09:00" sera notifié à 09h30 UTC (même heure, tick de :30).
+
+        En cas d'erreur de parsing → True (ne pas bloquer silencieusement).
+        """
+        if intent.goal_id is None:
+            return True
+
+        from app.models.goal import Goal
+        goal = self.db.get(Goal, intent.goal_id)
+        if goal is None:
+            return True
+
+        ctx = goal.context_data or {}
+        notif_mode = ctx.get("notif_mode", "realtime")
+        notif_time = ctx.get("notif_time")  # format attendu : "HH:MM"
+
+        if notif_mode != "scheduled" or not notif_time:
+            return True  # mode realtime → pas de contrainte horaire
+
+        try:
+            target_hour = int(str(notif_time).split(":")[0])
+        except (ValueError, IndexError):
+            logger.warning(
+                "[MatchRunner] notif_time invalide '%s' pour goal %s — traitement immédiat",
+                notif_time, intent.goal_id,
+            )
+            return True  # format inattendu → ne pas bloquer
+
+        current_hour = now.hour  # UTC, cohérent avec le scheduler
+        if current_hour != target_hour:
+            logger.debug(
+                "[MatchRunner] user %s : heure programmée %dh, heure courante %dh UTC — skip",
+                intent.user_id, target_hour, current_hour,
+            )
+            return False
+
+        return True
+
+
+# ── Vérification LLM de pertinence ─────────────────────────────────────────
+
+_VERIFY_SYSTEM = (
+    "Tu évalues la pertinence d'offres d'opportunités par rapport à l'intention d'un utilisateur.\n"
+    "Réponds UNIQUEMENT en JSON valide, sans texte autour.\n"
+    "Format strict : {\"pertinentes\": [numéros], \"partielles\": [numéros], \"hors_sujet\": [numéros]}\n\n"
+    "Critères :\n"
+    "- pertinentes  : offre correspond bien (domaine, type, localisation cohérents)\n"
+    "- partielles   : offre liée au domaine mais décalée (mauvais niveau, localisation éloignée, type différent)\n"
+    "- hors_sujet   : offre sans rapport réel avec l'intention\n\n"
+    "Règle : chaque numéro doit apparaître exactement une fois au total."
+)
+
+
+async def _verify_relevance_llm(
+    offers: list[dict],
+    intent: "UserIntent",
+    llm: "LLMProvider",
+) -> list[dict]:
+    """Filtre et reordonne les offres via un appel LLM léger (temperature=0).
+
+    Logique :
+    - pertinentes en premier, partielles en second, hors_sujet supprimées.
+    - Si le LLM rejette tout → fallback silencieux sur la liste pgvector originale.
+    - Si le LLM échoue (erreur réseau, JSON invalide) → même fallback.
+
+    Coût : ~300-400 tokens en entrée + ~80 tokens en sortie par run utilisateur.
+    """
+    import json as _json
+
+    # ── Contexte intention ──────────────────────────────────────────────────
+    ctx_parts = [f"Intention : {intent.intent_summary}"]
+    details = []
+    if intent.domain:
+        details.append(f"domaine={intent.domain}")
+    if intent.level:
+        details.append(f"niveau={intent.level}")
+    if intent.location:
+        details.append(f"localisation={intent.location}")
+    if intent.intent_type:
+        details.append(f"type={intent.intent_type}")
+    if details:
+        ctx_parts.append(" | ".join(details))
+
+    # ── Liste numérotée des offres (1-based, descriptions courtes) ──────────
+    offer_lines: list[str] = []
+    for i, o in enumerate(offers, start=1):
+        title = (o.get("title") or "")[:100]
+        loc   = (o.get("location") or "")
+        desc  = (o.get("description") or "")[:120]
+        otype = (o.get("type") or "")
+        line  = f"[{i}] {title}"
+        if otype:
+            line += f" ({otype})"
+        if loc:
+            line += f" — {loc}"
+        if desc:
+            line += f" — {desc}"
+        offer_lines.append(line)
+
+    user_content = (
+        "\n".join(ctx_parts)
+        + "\n\nOffres candidates :\n"
+        + "\n".join(offer_lines)
+    )
+
+    messages = [
+        {"role": "system", "content": _VERIFY_SYSTEM},
+        {"role": "user", "content": user_content},
+    ]
+
+    try:
+        raw = await llm.complete(messages, temperature=0.0, max_tokens=150)
+
+        # Nettoyer les éventuels blocs markdown
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = "\n".join(cleaned.split("\n")[1:])
+        if cleaned.endswith("```"):
+            cleaned = "\n".join(cleaned.split("\n")[:-1])
+
+        data = _json.loads(cleaned.strip())
+        pertinentes = [int(x) for x in data.get("pertinentes", []) if str(x).isdigit()]
+        partielles  = [int(x) for x in data.get("partielles",  []) if str(x).isdigit()]
+
+        # Construire la liste finale : pertinentes d'abord, partielles ensuite
+        kept: list[int] = []
+        for idx in pertinentes + partielles:
+            if 1 <= idx <= len(offers) and idx not in kept:
+                kept.append(idx)
+
+        if not kept:
+            # LLM a tout mis en hors_sujet → on garde les résultats pgvector
+            # (mieux vaut montrer quelque chose que rien)
+            logger.warning(
+                "[MatchRunner] LLM verification rejected all %d offers — keeping originals",
+                len(offers),
+            )
+            return offers
+
+        filtered = [offers[i - 1] for i in kept]
+        excluded = len(offers) - len(filtered)
+        if excluded:
+            logger.info(
+                "[MatchRunner] LLM verification: %d/%d offres retenues (%d hors_sujet supprimées)",
+                len(filtered), len(offers), excluded,
+            )
+        return filtered
+
+    except Exception:
+        logger.warning(
+            "[MatchRunner] LLM verification failed — keeping original pgvector results",
+            exc_info=True,
+        )
+        return offers  # Fallback silencieux : pgvector reste la ligne de base
+
+
+# ── Interaction contextuelle (steps + propositions) ────────────────────────
+
+# Mapping offer_type → (suggestions, steps).
+# Couvre les types définis dans ScrapedOffer.offer_type et les intents courants.
+# Si le type est absent ou inconnu → fallback générique.
+_OFFER_TYPE_INTERACTIONS: dict[str, tuple[list[str], list[dict]]] = {
+    "job": (
+        [
+            "Rédiger mon CV pour cette offre",
+            "Préparer ma lettre de motivation",
+            "Analyser les compétences requises",
+        ],
+        [
+            {"id": "s1", "label": "Étudier l'offre d'emploi", "description": "Lisez attentivement les critères, le niveau requis et les responsabilités du poste.", "order": 1},
+            {"id": "s2", "label": "Mettre à jour mon CV", "description": "Adaptez votre CV aux exigences spécifiques du poste.", "order": 2},
+            {"id": "s3", "label": "Rédiger la lettre de motivation", "description": "Rédigez une lettre ciblée qui met en valeur votre adéquation avec le poste.", "order": 3},
+            {"id": "s4", "label": "Envoyer ma candidature", "description": "Soumettez votre dossier complet avant la date limite.", "order": 4},
+        ],
+    ),
+    "scholarship": (
+        [
+            "Vérifier mon éligibilité à la bourse",
+            "Préparer mon dossier de candidature",
+            "Rédiger ma lettre de motivation",
+        ],
+        [
+            {"id": "s1", "label": "Vérifier l'éligibilité", "description": "Consultez les critères (nationalité, niveau d'études, domaine) et confirmez que vous y répondez.", "order": 1},
+            {"id": "s2", "label": "Rassembler les documents", "description": "Relevés de notes, lettres de recommandation, CV académique et pièce d'identité.", "order": 2},
+            {"id": "s3", "label": "Rédiger la lettre de motivation", "description": "Expliquez votre projet académique, vos objectifs et pourquoi vous méritez cette bourse.", "order": 3},
+            {"id": "s4", "label": "Soumettre le dossier", "description": "Déposez votre candidature complète avant la deadline officielle.", "order": 4},
+        ],
+    ),
+    "grant": (
+        [
+            "Évaluer l'éligibilité de mon projet",
+            "Préparer mon dossier de financement",
+            "Rédiger le pitch de mon projet",
+        ],
+        [
+            {"id": "s1", "label": "Analyser les critères du financement", "description": "Secteur cible, montant disponible, conditions d'éligibilité et documents requis.", "order": 1},
+            {"id": "s2", "label": "Structurer le projet", "description": "Définissez clairement les objectifs, le budget prévisionnel et l'impact attendu.", "order": 3},
+            {"id": "s3", "label": "Monter le dossier", "description": "Préparez le business plan, les états financiers et les justificatifs demandés.", "order": 3},
+            {"id": "s4", "label": "Soumettre la demande", "description": "Déposez le dossier complet avant la clôture de l'appel.", "order": 4},
+        ],
+    ),
+    "call_for_applications": (
+        [
+            "Analyser le cahier des charges",
+            "Vérifier les critères de participation",
+            "Préparer mon dossier de réponse",
+        ],
+        [
+            {"id": "s1", "label": "Lire le cahier des charges", "description": "Comprenez les exigences techniques, financières et administratives de l'appel.", "order": 1},
+            {"id": "s2", "label": "Vérifier l'éligibilité", "description": "Assurez-vous que votre profil ou structure correspond aux critères de participation.", "order": 2},
+            {"id": "s3", "label": "Préparer l'offre technique", "description": "Rédigez la proposition technique détaillée en réponse aux exigences.", "order": 3},
+            {"id": "s4", "label": "Soumettre le dossier complet", "description": "Envoyez l'ensemble des documents requis avant la date de clôture.", "order": 4},
+        ],
+    ),
+    "formation": (
+        [
+            "Vérifier les prérequis de la formation",
+            "Comparer avec d'autres formations similaires",
+            "M'inscrire à la formation",
+        ],
+        [
+            {"id": "s1", "label": "Étudier le programme", "description": "Consultez le contenu, la durée, le format (présentiel/distanciel) et les prérequis.", "order": 1},
+            {"id": "s2", "label": "Vérifier l'éligibilité", "description": "Assurez-vous de remplir les conditions d'admission.", "order": 2},
+            {"id": "s3", "label": "Préparer le dossier d'inscription", "description": "Rassemblez les documents requis (CV, diplômes, lettre de motivation si nécessaire).", "order": 3},
+            {"id": "s4", "label": "Soumettre la candidature", "description": "Déposez votre inscription avant la date limite.", "order": 4},
+        ],
+    ),
+    "partnership": (
+        [
+            "Analyser les conditions du partenariat",
+            "Préparer une proposition de collaboration",
+            "Contacter le porteur du projet",
+        ],
+        [
+            {"id": "s1", "label": "Comprendre les termes", "description": "Lisez les conditions du partenariat : responsabilités, engagements et bénéfices attendus.", "order": 1},
+            {"id": "s2", "label": "Évaluer la compatibilité", "description": "Vérifiez que vos objectifs et ressources correspondent à ceux du partenaire.", "order": 2},
+            {"id": "s3", "label": "Rédiger la proposition", "description": "Préparez une lettre ou présentation expliquant votre intérêt et votre valeur ajoutée.", "order": 3},
+            {"id": "s4", "label": "Engager la collaboration", "description": "Contactez le porteur du projet et formalisez l'accord.", "order": 4},
+        ],
+    ),
+}
+
+# Fallback si aucun type connu (opportunity, resource, inconnu…)
+_DEFAULT_INTERACTIONS: tuple[list[str], list[dict]] = (
+    [
+        "M'aider à préparer ma candidature",
+        "Analyser les critères de cette opportunité",
+        "Affiner mes préférences de matching",
+    ],
+    [
+        {"id": "s1", "label": "Étudier l'opportunité", "description": "Lisez attentivement les détails et critères de l'opportunité.", "order": 1},
+        {"id": "s2", "label": "Préparer votre dossier", "description": "Rassemblez les documents nécessaires selon les exigences.", "order": 2},
+        {"id": "s3", "label": "Soumettre votre candidature", "description": "Postulez via le lien de l'offre avant la date limite.", "order": 3},
+    ],
+)
+
+
+def _build_interaction_payload(offers: list[dict]) -> dict:
+    """Dérive suggestions et steps du type dominant des offres matchées.
+
+    Stratégie : type le plus fréquent dans la liste. En cas d'égalité,
+    on prend le premier rencontré (ordre déjà trié par score décroissant).
+    """
+    from collections import Counter
+    types = [o.get("type") for o in offers if o.get("type")]
+    dominant = Counter(types).most_common(1)[0][0] if types else None
+    suggestions, steps = _OFFER_TYPE_INTERACTIONS.get(
+        dominant or "", _DEFAULT_INTERACTIONS
+    )
+    return {"suggestions": suggestions, "steps": steps}
+
+
+# ── Formatage des messages ──────────────────────────────────────────────────
+
+
+def _format_chat_message(offers: Iterable[dict]) -> str:
+    """Message assistant en markdown — listing enrichi avec score, description, liens."""
+    lines = [
+        "Voici de nouvelles opportunités qui correspondent à votre objectif :",
+        "",
+    ]
+    for i, o in enumerate(offers, start=1):
+        title = o.get("title") or "(sans titre)"
+        url = o.get("url") or ""
+        company = o.get("company") or ""
+        location = o.get("location") or ""
+        description = (o.get("description") or "").strip()
+        score = float(o.get("relevance_score") or 0.0)
+        # Normalise le score interne (0–75) vers un pourcentage affiché (0–99 %)
+        match_pct = min(99, round(score / 75.0 * 100))
+
+        link = f"[{title}]({url})" if url else f"**{title}**"
+        meta = " · ".join(p for p in [company, location] if p)
+
+        lines.append(f"**{i}. {link}**")
+        pct_line = f"*Pertinence estimée : {match_pct} %*"
+        if meta:
+            pct_line += f" · {meta}"
+        lines.append(pct_line)
+        if description:
+            preview = description[:200] + "…" if len(description) > 200 else description
+            lines.append(preview)
+        lines.append("")
+
+    lines.append(
+        "_Cette sélection est mise à jour automatiquement selon votre intention. "
+        "Vous pouvez ajuster la fréquence ou désactiver ces notifications dans vos préférences._"
+    )
+    return "\n".join(lines)
+
+
+def _format_wa_message(offers: Iterable[dict], thread_url: str) -> str:
+    """Notif WhatsApp courte — renvoie vers le thread Malayka, pas vers les offres directement."""
+    items = list(offers)
+    lines = [f"Malayka — {len(items)} nouvelle(s) opportunité(s) pour vous :"]
+    for o in items:
+        title = (o.get("title") or "").strip()
+        if len(title) > 80:
+            title = title[:77] + "..."
+        lines.append(f"• {title}")
+    lines.append("")
+    lines.append("Ouvrez votre discussion sur Malayka pour voir les détails et postuler :")
+    lines.append(thread_url)
+    return "\n".join(lines)
