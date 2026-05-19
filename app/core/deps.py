@@ -45,21 +45,24 @@ def get_current_user(
 def extract_profile(user) -> dict:
     """Extrait le profil utilisateur en dict pour les agents.
 
-    Inclut field_of_study (filiÃ¨re Ã©tudiante) distinct de domain (domaine pro).
-    Les deux champs sont transmis : les agents et le systÃ¨me A5 les lisent tous les deux.
+    Inclut tous les champs déclarés par l'utilisateur (inscription + paramètres)
+    pour que les agents disposent du contexte complet : domaine, filière, centres
+    d'intérêt, compétences. Tous ces champs influencent les réponses et le matching.
     """
     if not user.profile:
         return {}
     return {
-        "first_name":     user.profile.first_name,
-        "last_name":      user.profile.last_name,
-        "gender":         user.profile.gender,
-        "birth_year":     user.profile.birth_year,
-        "country":        user.profile.country,
-        "primary_role":   user.profile.primary_role,
-        "domain":         user.profile.domain,
-        "field_of_study": user.profile.field_of_study,
-        "current_status": user.profile.current_status,
+        "first_name":        user.profile.first_name,
+        "last_name":         user.profile.last_name,
+        "gender":            user.profile.gender,
+        "birth_year":        user.profile.birth_year,
+        "country":           user.profile.country,
+        "primary_role":      user.profile.primary_role,
+        "domain":            user.profile.domain,
+        "field_of_study":    user.profile.field_of_study,
+        "current_status":    user.profile.current_status,
+        "preferred_content": user.profile.preferred_content,
+        "skills":            user.profile.skills,
     }
 
 

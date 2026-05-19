@@ -296,7 +296,7 @@ def _cold_start_recommendations(
     if not profile:
         return []
 
-    # Mots-clés domaine/filière déclarés à l'inscription
+    # Mots-clés domaine/filière/intérêts déclarés à l'inscription et dans les paramètres
     domain_keywords: list[str] = []
     if profile.domain:
         domain_keywords.append(profile.domain)
@@ -304,6 +304,13 @@ def _cold_start_recommendations(
         domain_keywords.append(profile.field_of_study)
     if profile.current_status:
         domain_keywords.append(profile.current_status)
+    if profile.preferred_content:
+        # preferred_content est une chaîne libre : "entrepreneuriat, tech, bourses"
+        # On extrait chaque terme séparé par virgule ou point-virgule
+        for term in profile.preferred_content.replace(";", ",").split(","):
+            term = term.strip()
+            if term and len(term) > 2:
+                domain_keywords.append(term)
 
     offer_svc = ScrapedOfferService(db)
     raw_offers = offer_svc.search_for_profile(
