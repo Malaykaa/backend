@@ -125,7 +125,9 @@ def health_ready():
             conn.execute(text("SELECT 1"))
         checks["db"] = "ok"
     except Exception as exc:
-        checks["db"] = f"error: {exc}"
+        import logging as _logging
+        _logging.getLogger(__name__).error("[health/ready] PostgreSQL check failed: %s", exc)
+        checks["db"] = "error"
 
     # ── Redis ───────────────────────────────────────────────────────────────
     try:
@@ -133,7 +135,9 @@ def health_ready():
         client.ping()
         checks["redis"] = "ok"
     except Exception as exc:
-        checks["redis"] = f"error: {exc}"
+        import logging as _logging
+        _logging.getLogger(__name__).error("[health/ready] Redis check failed: %s", exc)
+        checks["redis"] = "error"
 
     all_ok = all(v == "ok" for v in checks.values())
     return JSONResponse(

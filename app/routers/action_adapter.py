@@ -13,8 +13,9 @@ import logging
 import uuid as _uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
+from app.core.rate_limit import limiter, get_user_key
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -179,7 +180,9 @@ def _resolve_doc_type(action_type: str, message: str) -> str | None:
 
 
 @router.post("/actions/{preset}/smart/stream")
+@limiter.limit("20/minute", key_func=get_user_key)
 async def smart_stream(
+    request: Request,
     preset: str,
     body: SmartStreamRequest,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -253,7 +256,9 @@ async def smart_stream(
 
 
 @router.post("/actions/swarm/{action_type}/stream")
+@limiter.limit("20/minute", key_func=get_user_key)
 async def swarm_stream(
+    request: Request,
     action_type: str,
     body: SwarmStreamRequest,
     current_user: Annotated[User, Depends(get_current_user)],

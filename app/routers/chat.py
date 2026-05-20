@@ -12,7 +12,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
+from app.core.rate_limit import limiter, get_user_key
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select as sa_select
@@ -507,7 +508,9 @@ def delete_message(
 
 
 @router.post("/threads/{thread_id}/stream")
+@limiter.limit("20/minute", key_func=get_user_key)
 async def stream_message(
+    request: Request,
     thread_id: uuid.UUID,
     body: FrontendMessageCreate,
     current_user: Annotated[User, Depends(get_current_user)],

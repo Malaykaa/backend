@@ -314,6 +314,13 @@ def _cold_start_recommendations(
             if term and len(term) > 2:
                 domain_keywords.append(term)
 
+    if profile.skills:
+        # skills peut être un dict {"Python": "avancé", ...} ou une liste ["Python", ...]
+        if isinstance(profile.skills, dict):
+            domain_keywords.extend(str(v) for v in profile.skills.values() if v)
+        elif isinstance(profile.skills, list):
+            domain_keywords.extend(str(s) for s in profile.skills if s)
+
     offer_svc = ScrapedOfferService(db)
     raw_offers = offer_svc.search_for_profile(
         primary_role=profile.primary_role,

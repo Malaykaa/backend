@@ -103,6 +103,29 @@ class OtpService:
         self._memory.pop(key, None)
         return True
 
+    def check_send_rate(self, phone: str, max_per_hour: int = 3) -> None:
+        """Lève TooManyRequestsError si le téléphone a dépassé la limite d'envoi OTP.
+
+        Utilise un compteur Redis avec fenêtre glissante d'1 heure.
+        Fail-open si Redis est indisponible (fallback mémoire en dev).
+        """
+        if self._redis is None:
+            return  # fail-open — pas de Redis en dev
+        from app.core.exceptions import TooManyRequestsError
+        rate_key = f"otp:rate:{self.normalize_phone(phone)}"
+        try:
+            count = self._redis.incr(rate_key)
+            if count == 1:
+                self._redis.expire(rate_key, 3600)  # fenêtre de 1 heure
+            if count > max_per_hour:
+                raise TooManyRequestsError(
+                    f"Trop d'envois OTP pour ce numéro. Réessaie dans 1 heure."
+                )
+        except TooManyRequestsError:
+            raise
+        except Exception as exc:
+            logger.warning("[OtpService] check_send_rate Redis error (fail-open): %s", exc)
+
     def invalidate(self, phone: str) -> None:
         key = self._key(phone)
         if self._redis is not None:

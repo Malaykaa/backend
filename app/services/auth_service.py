@@ -92,6 +92,7 @@ class AuthService:
         if len(normalized) < 8:
             raise BadRequestError("Numéro de téléphone invalide.")
 
+        otp_service.check_send_rate(phone)  # max 3 envois/heure par numéro
         code = otp_service.generate_code()
         otp_service.store(phone, code)
         if background_tasks is not None:
