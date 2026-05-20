@@ -194,10 +194,12 @@ async def get_propositions(
         logger.warning("Lecture cache LLM scores: %s", exc)
 
     # Déclencher un rescoring LLM en arrière-plan si des cache-miss existent
+    # On ne passe PAS la session FastAPI : elle est fermée dès la réponse envoyée.
+    # _background_rescore ouvre sa propre session indépendante.
     uncached_refs = {c["offer_ref"] for c in candidates[:12]} - set(llm_scores)
     if uncached_refs:
         background_tasks.add_task(
-            _background_rescore, db, user_id, candidates, primary_intent
+            _background_rescore, user_id, candidates, primary_intent
         )
 
     # Appliquer le bonus LLM aux candidats déjà en cache
@@ -354,12 +356,17 @@ def _freshness_factor(scraped_at: datetime | None) -> float:
 
 
 async def _background_rescore(
-    db: Session,
     user_id: uuid.UUID,
     candidates: list[dict],
     intent,
 ) -> None:
-    """Tâche de fond : appelle le LLM pour rescorer les candidats non cachés."""
+    """Tâche de fond : appelle le LLM pour rescorer les candidats non cachés.
+
+    Ouvre sa propre session DB indépendante — la session FastAPI est déjà
+    fermée au moment où cette tâche s'exécute.
+    """
+    from app.core.database import SessionLocal
+    db = SessionLocal()
     try:
         llm = get_llm_provider()
         rescorer = LLMRescorer(db)
@@ -371,4 +378,7 @@ async def _background_rescore(
         )
         db.commit()
     except Exception as exc:
+        db.rollback()
         logger.warning("Background LLM rescore failed: %s", exc)
+    finally:
+        db.close()
