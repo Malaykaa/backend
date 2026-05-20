@@ -89,6 +89,13 @@ class Settings(BaseSettings):
     # Redis
     redis_url: str = "redis://localhost:6379/0"
 
+    # Blacklist des tokens révoqués
+    # False (défaut) : fail-open — si Redis est hors-ligne, les tokens révoqués
+    #   restent utilisables jusqu'à expiration naturelle (acceptable en dev).
+    # True : fail-closed — /auth/refresh renvoie 401 si Redis est indisponible.
+    #   Recommandé en production. Ajouter BLACKLIST_FAIL_CLOSED=true dans .env.prod.
+    blacklist_fail_closed: bool = False
+
     @property
     def is_production(self) -> bool:
         """True pour staging/prod — environnements à exigences de sécurité strictes."""
@@ -149,6 +156,13 @@ def validate_security_settings(settings: Settings | None = None) -> None:
             "CORS_ORIGINS contient des origines localhost en staging/prod — "
             "vérifier que le domaine de production est configuré "
             "(ex: CORS_ORIGINS=[\"https://app.malayka.com\"])."
+        )
+
+    if s.is_production and not s.blacklist_fail_closed:
+        warnings.append(
+            "BLACKLIST_FAIL_CLOSED=false en staging/prod — un refresh token révoqué "
+            "reste utilisable si Redis est hors-ligne. Définir "
+            "BLACKLIST_FAIL_CLOSED=true dans .env.prod pour sécuriser la révocation."
         )
 
     for warning in warnings:

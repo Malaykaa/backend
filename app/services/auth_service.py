@@ -146,9 +146,16 @@ class AuthService:
 
     # ── Refresh & profil ─────────────────────────────────
 
-    def refresh(self, refresh_token: str) -> str:
-        """Rafraîchit l'access token via le refresh token."""
-        from app.services.token_blacklist import is_revoked
+    def refresh(self, refresh_token: str) -> tuple[str, str]:
+        """Rafraîchit la session par rotation du refresh token.
+
+        Révoque l'ancien refresh token, émet un nouveau couple
+        (access_token, refresh_token). Un token volé ne peut donc
+        être utilisé qu'une seule fois avant invalidation.
+
+        Retourne : (new_access_token, new_refresh_token)
+        """
+        from app.services.token_blacklist import is_revoked, revoke
 
         try:
             payload = decode_token(refresh_token)
@@ -169,7 +176,16 @@ class AuthService:
         if not user or not user.is_active:
             raise UnauthorizedError("Utilisateur introuvable ou inactif.")
 
-        return create_access_token(str(user.id))
+        # Rotation : révoquer l'ancien token avant d'émettre le nouveau.
+        # Non bloquant si Redis est down — la rotation côté cookie a lieu dans tous les cas.
+        try:
+            revoke(refresh_token, exp=int(payload.get("exp", 0)))
+        except Exception:
+            pass
+
+        new_access = create_access_token(str(user.id))
+        new_refresh = create_refresh_token(str(user.id))
+        return new_access, new_refresh
 
     def get_user_with_profile(self, user_id: uuid.UUID) -> User:
         """Retourne l'utilisateur avec son profil chargé."""

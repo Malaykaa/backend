@@ -160,15 +160,9 @@ def refresh_token(
     if not refresh_token:
         raise UnauthorizedError("Cookie 99eange_rt manquant.")
     service = AuthService(db)
-    new_access = service.refresh(refresh_token)
-    response.set_cookie(
-        "99eange_jwt",
-        new_access,
-        max_age=settings.access_token_expire_minutes * 60,
-        **_COOKIE_KWARGS,
-    )
-    return {"detail": "Token rafraÃ®chi."}
-
+    new_access, new_refresh = service.refresh(refresh_token)
+    _set_auth_cookies(response, new_access, new_refresh)
+    return {"detail": "Token rafraîchi."}
 
 @router.get("/me", response_model=MeResponse)
 def get_me(
