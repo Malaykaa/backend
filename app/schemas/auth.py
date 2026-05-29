@@ -1,4 +1,4 @@
-﻿"""SchÃ©mas Pydantic pour l'authentification."""
+"""SchÃ©mas Pydantic pour l'authentification."""
 
 import re
 import uuid
@@ -64,7 +64,7 @@ class SendOtpRequest(BaseModel):
 
 
 class VerifyOtpRegisterRequest(BaseModel):
-    """VÃ©rification OTP + crÃ©ation de compte."""
+    """Vérification OTP + création de compte."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -72,13 +72,23 @@ class VerifyOtpRegisterRequest(BaseModel):
     code: str = Field(min_length=6, max_length=6)
     password: str = Field(min_length=8, max_length=128)
 
-    # DonnÃ©es profil optionnelles (rÃ©coltÃ©es pendant l'onboarding)
+    # Données profil optionnelles (récoltées pendant l'onboarding)
     first_name: str | None = Field(default=None, max_length=100)
     last_name: str | None = Field(default=None, max_length=100)
     gender: Gender | None = None
     birth_year: int | None = Field(default=None, ge=1920)
     country: str | None = Field(default=None, max_length=100)
     primary_role: PrimaryRole | None = None
+
+    @field_validator("gender", mode="before")
+    @classmethod
+    def normalize_gender(cls, v: str | None) -> str | None:
+        return {"male": "M", "female": "F"}.get(v, v) if v is not None else v
+
+    @field_validator("primary_role", mode="before")
+    @classmethod
+    def normalize_primary_role(cls, v: str | None) -> str | None:
+        return {"jobseeker": "job_seeker"}.get(v, v) if v is not None else v
 
     @field_validator("code")
     @classmethod
@@ -98,12 +108,21 @@ class VerifyOtpRegisterRequest(BaseModel):
 
 
 class LoginPhoneRequest(BaseModel):
-    """Connexion par tÃ©lÃ©phone + mot de passe."""
+    """Connexion par téléphone + mot de passe."""
 
     model_config = ConfigDict(extra="forbid")
 
     phone: str = Field(min_length=8, max_length=30)
     password: str
+
+
+class ChangePasswordRequest(BaseModel):
+    """Changement de mot de passe authentifié."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    old_password: str
+    new_password: str = Field(min_length=8, max_length=128)
 
 
 # â”€â”€ RÃ©ponses â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

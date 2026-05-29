@@ -18,6 +18,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from app.agents.types import AgentMode, GoalType
 from app.llm.base import LLMProvider
 
 logger = logging.getLogger(__name__)
@@ -30,10 +31,8 @@ def _strip_fences(text: str) -> str:
     m = _FENCE_RE.search(text)
     return m.group(1).strip() if m else text.strip()
 
-_VALID_INTENTS = {
-    "exam", "scholarship", "funding", "tender",
-    "study_grant", "career", "freelance", "document", "free",
-}
+# Ensemble des valeurs valides extraites des membres de GoalType
+_VALID_INTENTS: frozenset[str] = frozenset(GoalType)
 
 _TRIAGE_SYSTEM_PROMPT = """\
 Tu es le routeur de Malayka.
@@ -149,11 +148,11 @@ class TriageResult:
 
     def to_plan_decision(self) -> PlanDecision:
         """Convertit en PlanDecision pour l'ExecutionEngine."""
-        if self.mode == "workflow" and self.steps:
-            return PlanDecision(mode="workflow", steps=self.steps)
-        if self.mode == "generate":
-            return PlanDecision(mode="direct", agent_type="document")
-        return PlanDecision(mode="direct", agent_type=self.intent)
+        if self.mode == AgentMode.WORKFLOW and self.steps:
+            return PlanDecision(mode=AgentMode.WORKFLOW, steps=self.steps)
+        if self.mode == AgentMode.GENERATE:
+            return PlanDecision(mode=AgentMode.DIRECT, agent_type=GoalType.DOCUMENT)
+        return PlanDecision(mode=AgentMode.DIRECT, agent_type=self.intent)
 
 
 # ── Classe principale ────────────────────────────────────
@@ -198,31 +197,31 @@ class Triage:
             data = json.loads(cleaned)
 
             # Intent
-            intent = data.get("intent", "free")
+            intent = data.get("intent", GoalType.FREE)
             if intent not in _VALID_INTENTS:
-                intent = "free"
+                intent = GoalType.FREE
 
             # Confidence
             confidence = min(max(float(data.get("confidence", 0.5)), 0.0), 1.0)
 
             # Mode
-            mode = data.get("mode", "direct")
-            if mode not in ("direct", "workflow", "generate"):
-                mode = "direct"
+            mode = data.get("mode", AgentMode.DIRECT)
+            if mode not in frozenset(AgentMode):
+                mode = AgentMode.DIRECT
 
             # action_type (generate mode)
             action_type: str | None = None
-            if mode == "generate":
+            if mode == AgentMode.GENERATE:
                 action_type = data.get("action_type")
-                intent = "document"  # generate → toujours document
+                intent = GoalType.DOCUMENT  # generate → toujours document
 
             # Steps (workflow)
             steps: list[PlannedStep] = []
-            if mode == "workflow":
+            if mode == AgentMode.WORKFLOW:
                 for s in data.get("steps", []):
-                    agent_type = s.get("agent_type", "free")
+                    agent_type = s.get("agent_type", GoalType.FREE)
                     if agent_type not in _VALID_INTENTS:
-                        agent_type = "free"
+                        agent_type = GoalType.FREE
                     steps.append(PlannedStep(
                         agent_type=agent_type,
                         task=s.get("task", ""),
@@ -240,4 +239,4 @@ class Triage:
             )
 
         except (json.JSONDecodeError, TypeError, ValueError):
-            return TriageResult(intent="free", confidence=0.3, mode="direct")
+            return TriageResult(intent=GoalType.FREE, confidence=0.3, mode=AgentMode.DIRECT)

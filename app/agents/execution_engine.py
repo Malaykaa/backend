@@ -22,6 +22,7 @@ from app.agents.deliverable_configs import (
 )
 from app.agents.events import EventType, ProgressEvent
 from app.agents.triage import PlanDecision
+from app.agents.types import AgentMode, GoalType
 from app.llm.base import LLMProvider
 from app.llm.continuation import complete_with_continuation
 
@@ -51,12 +52,37 @@ def _format_profile(profile: dict) -> str:
     return ", ".join(lines)
 
 
+def _build_conversation_context(history: list[dict]) -> str:
+    """Construit un résumé textuel de l'historique de conversation.
+
+    Inclut le résumé compressé (system) et les échanges user/assistant récents.
+    Le champ `content` en DB est toujours la courte explication (pas le document
+    complet), donc pas de risque de token bloat en incluant tous les messages.
+    """
+    if not history:
+        return ""
+    parts = []
+    for msg in history:
+        role = msg.get("role", "")
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "system":
+            parts.append(f"[Résumé de la conversation]\n{content[:800]}")
+        elif role == "user":
+            parts.append(f"Utilisateur : {content[:500]}")
+        elif role in ("assistant", "bot"):
+            parts.append(f"Assistant : {content[:500]}")
+    return "\n".join(parts)[:4000]
+
+
 def _build_section_prompt(
     instruction: str,
     user_message: str,
     profile_summary: str,
     objective_context: str | None,
     key_facts_summary: str,
+    conversation_context: str = "",
 ) -> str:
     """Construit le prompt utilisateur pour une section de document."""
     parts = [f"Demande de l'utilisateur : {user_message}"]
@@ -66,6 +92,11 @@ def _build_section_prompt(
 
     if objective_context:
         parts.append(f"Contexte : {objective_context}")
+
+    if conversation_context:
+        parts.append(
+            f"Contexte de la conversation (informations fournies par l'utilisateur) :\n{conversation_context}"
+        )
 
     if key_facts_summary:
         parts.append(
@@ -168,7 +199,7 @@ class ExecutionEngine:
         """Point d'entrée : exécute le plan et yield la progression."""
         # Mode document : section-par-section avec progression
         # Sauf si c'est un follow-up (modification, question de suivi)
-        if plan.mode == "direct" and plan.agent_type == "document":
+        if plan.mode == AgentMode.DIRECT and plan.agent_type == GoalType.DOCUMENT:
             from app.agents.document_agent import _is_follow_up
 
             if await _is_follow_up(ctx, self.llm):
@@ -181,7 +212,7 @@ class ExecutionEngine:
             return
 
         # Mode workflow : multi-agents séquentiels
-        if plan.mode == "workflow" and plan.steps:
+        if plan.mode == AgentMode.WORKFLOW and plan.steps:
             async for event in self._execute_workflow(plan, ctx):
                 yield event
             return
@@ -196,7 +227,7 @@ class ExecutionEngine:
         ctx: AgentContext,
     ) -> AsyncIterator[ProgressEvent]:
         """Mode direct : un seul agent, comme avant."""
-        agent_type = plan.agent_type or "free"
+        agent_type = plan.agent_type or GoalType.FREE
         agent = self._get_agent(agent_type)
         result = await agent.process(ctx)
 
@@ -255,6 +286,10 @@ class ExecutionEngine:
 
         profile_summary = _format_profile(ctx.profile)
         objective_context = ctx.goal_context.get("objective_context")
+        # Contexte de la conversation : tout ce que l'utilisateur a partagé avant
+        # cette demande de génération (réponses au questionnaire d'accueil, détails
+        # du projet, etc.) — injecté dans chaque section pour personnaliser le document.
+        conversation_context = _build_conversation_context(ctx.history)
         generated_sections: list[str] = []
         # (section_label, key_facts_text) — alimenté après chaque section générée
         accumulated_key_facts: list[tuple[str, str]] = []
@@ -282,6 +317,7 @@ class ExecutionEngine:
                 profile_summary=profile_summary,
                 objective_context=objective_context,
                 key_facts_summary=key_facts_summary,
+                conversation_context=conversation_context,
             )
 
             messages = [
@@ -376,8 +412,14 @@ class ExecutionEngine:
         """
         import json as _json
 
+        conversation_ctx = _build_conversation_context(ctx.history)
+        context_block = (
+            f"\nContexte de la conversation :\n{conversation_ctx}\n"
+            if conversation_ctx else ""
+        )
+
         prompt = (
-            f"L'utilisateur demande : {ctx.message}\n\n"
+            f"L'utilisateur demande : {ctx.message}\n{context_block}\n"
             "Planifie les sections idéales pour ce document.\n"
             "Retourne UNIQUEMENT un JSON valide avec ce format :\n"
             '{"description": "nom court du document", "sections": ['

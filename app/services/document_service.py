@@ -6,6 +6,7 @@ import io
 import logging
 import os
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 from app.agents.base import AgentContext, AgentResponse
 from app.agents.orchestrator import Orchestrator
+from app.agents.types import GoalType
 from app.core.exceptions import NotFoundError
 from app.llm import get_llm_provider
 from app.models.attachment import Attachment
@@ -21,6 +23,7 @@ from app.models.document import Document, DocumentType
 from app.repositories.document_repo import DocumentRepository
 
 ATTACHMENTS_DIR = Path(os.getenv("ATTACHMENTS_DIR", "storage/attachments"))
+_MAX_EXTRACTED_CHARS = 12_000  # ~3 000 tokens — limite raisonnable pour injection LLM
 
 
 class DocumentService:
@@ -42,7 +45,7 @@ class DocumentService:
             user_id=user_id,
             message=message,
             profile=profile or {},
-            goal_type="document",
+            goal_type=GoalType.DOCUMENT,
             goal_context={"document_type": doc_type.value},
         )
 
@@ -79,6 +82,23 @@ class DocumentService:
     def list_documents(self, user_id: uuid.UUID, *, limit: int = 50, offset: int = 0) -> list[Document]:
         return self.repo.get_user_documents(user_id, limit=limit, offset=offset)
 
+    @staticmethod
+    def extract_pdf_text(data: bytes) -> str | None:
+        """Extrait le texte d'un PDF. Retourne None en cas d'échec."""
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(data))
+            parts: list[str] = []
+            for page in reader.pages:
+                text = page.extract_text() or ""
+                if text.strip():
+                    parts.append(text.strip())
+            full = "\n\n".join(parts)
+            return full[:_MAX_EXTRACTED_CHARS] if full else None
+        except Exception as exc:
+            logger.warning("PDF text extraction failed: %s", exc)
+            return None
+
     def create_attachment(
         self,
         message_id: uuid.UUID,
@@ -86,11 +106,15 @@ class DocumentService:
         content_type: str,
         data: bytes,
     ) -> Attachment:
-        """Sauvegarde un fichier sur disque et crée un Attachment en DB."""
+        """Sauvegarde un fichier sur disque et crée un Attachment lié à un message."""
         ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
         storage_key = f"{uuid.uuid4().hex}_{filename}"
         file_path = ATTACHMENTS_DIR / storage_key
         file_path.write_bytes(data)
+
+        extracted_text = None
+        if content_type == "application/pdf":
+            extracted_text = self.extract_pdf_text(data)
 
         attachment = Attachment(
             message_id=message_id,
@@ -98,10 +122,62 @@ class DocumentService:
             content_type=content_type,
             size_bytes=len(data),
             storage_key=storage_key,
+            extracted_text=extracted_text,
         )
         self.repo.db.add(attachment)
         self.repo.db.flush()
         return attachment
+
+    def create_pending_attachment(
+        self,
+        user_id: uuid.UUID,
+        filename: str,
+        content_type: str,
+        data: bytes,
+    ) -> Attachment:
+        """Upload "pending" — crée un Attachment sans message_id (lié plus tard au message)."""
+        ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
+        storage_key = f"{uuid.uuid4().hex}_{filename}"
+        file_path = ATTACHMENTS_DIR / storage_key
+        file_path.write_bytes(data)
+
+        extracted_text = None
+        if content_type == "application/pdf":
+            extracted_text = self.extract_pdf_text(data)
+
+        attachment = Attachment(
+            message_id=None,
+            pending_user_id=user_id,
+            filename=filename,
+            content_type=content_type,
+            size_bytes=len(data),
+            storage_key=storage_key,
+            extracted_text=extracted_text,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=2),
+        )
+        self.repo.db.add(attachment)
+        self.repo.db.flush()
+        return attachment
+
+    def link_attachments_to_message(
+        self,
+        attachment_ids: list[uuid.UUID],
+        message_id: uuid.UUID,
+        user_id: uuid.UUID,
+    ) -> list[Attachment]:
+        """Lie des attachments pending à un message. Vérifie l'ownership."""
+        linked: list[Attachment] = []
+        for att_id in attachment_ids:
+            att = self.repo.db.get(Attachment, att_id)
+            if not att:
+                continue
+            if att.pending_user_id != user_id:
+                continue
+            att.message_id = message_id
+            att.pending_user_id = None
+            att.expires_at = None
+            linked.append(att)
+        return linked
 
     def get_attachment(self, attachment_id: uuid.UUID) -> Attachment:
         attachment = self.repo.db.get(Attachment, attachment_id)

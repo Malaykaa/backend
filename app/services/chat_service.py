@@ -1,16 +1,22 @@
 """Service chat — logique métier : save message, orchestrate, save response.
 
-Deux modes :
+Deux variantes :
+- ChatService      : sync DB (APScheduler, `def` routers, `create_thread`)
+- AsyncChatService : async DB asyncpg — routers SSE critiques (`stream_message`)
+
+Deux modes (chaque variante) :
 - handle_message()  : retourne (ChatMessage, AgentResponse) — mode classique
 - stream_message()  : yield des ProgressEvent en SSE — mode streaming
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from typing import AsyncIterator
 
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 import structlog
@@ -21,12 +27,13 @@ logger = structlog.get_logger(__name__)
 from app.agents.base import AgentContext, AgentResponse
 from app.agents.events import EventType, ProgressEvent
 from app.agents.orchestrator import Orchestrator
+from app.agents.types import GoalType
 from app.core.exceptions import NotFoundError
 from app.llm import get_llm_provider
 from app.models.chat import ChatMessage, ChatThread, MessageRole
-from app.repositories.chat_repo import ChatRepository
+from app.repositories.chat_repo import AsyncChatRepository, ChatRepository
 from app.services.intent_extractor import IntentExtractorService
-from app.services.memory_service import MemoryService
+from app.services.memory_service import AsyncMemoryService, MemoryService
 from app.services.scraped_offer_service import ScrapedOfferService
 
 
@@ -74,6 +81,7 @@ class ChatService:
         content: str,
         profile: dict | None,
         user_payload: dict | None = None,
+        attachment_ids: list[str] | None = None,
     ) -> tuple[ChatThread, AgentContext]:
         """Étapes communes à handle_message/stream_message :
         vérif ownership, mémoire, save user msg, construction de l'AgentContext.
@@ -87,10 +95,43 @@ class ChatService:
         history = memory_ctx["recent_messages"]
         summary = memory_ctx["summary"]
 
-        self.repo.add_message(
+        user_msg = self.repo.add_message(
             thread_id=thread_id, role=MessageRole.user,
             content=content, payload=user_payload,
         )
+
+        # Lier les pièces jointes pending et enrichir le contenu avec le texte extrait / images
+        enriched_content = content
+        image_data: list[dict] = []
+        if attachment_ids:
+            from app.services.document_service import DocumentService, ATTACHMENTS_DIR
+            import base64
+            doc_svc = DocumentService(self.repo.db)
+            parsed_ids: list[uuid.UUID] = []
+            for raw_id in attachment_ids:
+                try:
+                    parsed_ids.append(uuid.UUID(raw_id))
+                except ValueError:
+                    pass
+            attachments = doc_svc.link_attachments_to_message(parsed_ids, user_msg.id, user_id)
+            texts: list[str] = []
+            for att in attachments:
+                if att.extracted_text:
+                    texts.append(
+                        f"[Contenu du fichier '{att.filename}' :\n{att.extracted_text}]"
+                    )
+                elif att.content_type.startswith("image/"):
+                    try:
+                        file_path = ATTACHMENTS_DIR / att.storage_key
+                        raw_bytes = file_path.read_bytes()
+                        image_data.append({
+                            "media_type": att.content_type,
+                            "data": base64.standard_b64encode(raw_bytes).decode(),
+                        })
+                    except Exception as exc:
+                        logger.warning("Failed to load image attachment %s: %s", att.id, exc)
+            if texts:
+                enriched_content = "\n\n".join(texts) + "\n\n" + content
 
         # goal_type : priorité au goal lié, sinon dernier agent_id de l'historique
         goal_type = None
@@ -120,12 +161,13 @@ class ChatService:
 
         ctx = AgentContext(
             user_id=user_id,
-            message=content,
+            message=enriched_content,  # contient le texte des PDFs si présents
             history=effective_history,
             profile=profile or {},
             goal_type=goal_type,
             goal_type_source=goal_type_source,
             goal_context=goal_context,
+            image_data=image_data,
         )
         return thread, ctx
 
@@ -165,10 +207,11 @@ class ChatService:
         content: str,
         profile: dict | None = None,
         user_payload: dict | None = None,
+        attachment_ids: list[str] | None = None,
     ) -> tuple[ChatMessage, AgentResponse]:
         """Flux non-streaming : save user msg → orchestrate → save assistant msg → return."""
         bind_chat_context(thread_id=str(thread_id), user_id=str(user_id))
-        thread, ctx = self._prepare_context(thread_id, user_id, content, profile, user_payload)
+        thread, ctx = self._prepare_context(thread_id, user_id, content, profile, user_payload, attachment_ids)
 
         llm = get_llm_provider()
         orchestrator = Orchestrator(llm)
@@ -191,10 +234,11 @@ class ChatService:
         user_id: uuid.UUID,
         content: str,
         profile: dict | None = None,
+        attachment_ids: list[str] | None = None,
     ) -> AsyncIterator[ProgressEvent]:
         """Variante streaming : yield ProgressEvent et sauvegarde à l'event 'done'."""
         bind_chat_context(thread_id=str(thread_id), user_id=str(user_id))
-        thread, ctx = self._prepare_context(thread_id, user_id, content, profile)
+        thread, ctx = self._prepare_context(thread_id, user_id, content, profile, attachment_ids=attachment_ids)
 
         llm = get_llm_provider()
         orchestrator = Orchestrator(llm)
@@ -293,7 +337,7 @@ class ChatService:
 
         Retourne goal_context inchangé si pas d'offres ou intent non pertinent.
         """
-        if not goal_type or goal_type in ("document", "free"):
+        if not goal_type or goal_type in (GoalType.DOCUMENT, GoalType.FREE):
             return goal_context
         try:
             # Savepoint : si la table scraped_offers n'existe pas (ou toute
@@ -335,3 +379,292 @@ class ChatService:
             if agent_id and agent_id != "free":
                 return agent_id
         return None
+
+
+# ── Variante async (asyncpg) ────────────────────────────────────────────────
+
+
+class AsyncChatService:
+    """Variante async de ChatService pour les routers SSE (asyncpg).
+
+    Seuls handle_message() et stream_message() sont exposés — ce sont les
+    deux seuls points d'entrée appelés depuis les routers `async def`.
+
+    Services secondaires encore sync (GoalService, PlanService,
+    IntentExtractorService) : appelés via asyncio.to_thread() avec une
+    session sync propre pour ne pas bloquer la boucle asyncio.
+    """
+
+    def __init__(self, db: AsyncSession) -> None:
+        self.db = db
+        self.repo = AsyncChatRepository(db)
+        self.memory = AsyncMemoryService(db)
+
+    # ── Helpers internes ──────────────────────────────────────────────────────
+
+    async def _prepare_context(
+        self,
+        thread_id: uuid.UUID,
+        user_id: uuid.UUID,
+        content: str,
+        profile: dict | None,
+        user_payload: dict | None = None,
+        attachment_ids: list[str] | None = None,
+    ) -> tuple[ChatThread, AgentContext]:
+        """Charge le thread, injecte la mémoire, persiste le message user."""
+        thread = await self.repo.get_thread_with_messages(thread_id)
+        if not thread or thread.user_id != user_id:
+            raise NotFoundError("Thread")
+
+        memory_ctx = await self.memory.get_context(thread_id)
+        history = memory_ctx["recent_messages"]
+        summary = memory_ctx["summary"]
+
+        user_msg = await self.repo.add_message(
+            thread_id=thread_id, role=MessageRole.user,
+            content=content, payload=user_payload,
+        )
+
+        # Pièces jointes — exécutées dans un thread (DocumentService est sync)
+        enriched_content = content
+        image_data: list[dict] = []
+        if attachment_ids:
+            enriched_content, image_data = await asyncio.to_thread(
+                _sync_load_attachments,
+                attachment_ids, user_msg.id, user_id, content,
+            )
+
+        # goal_type depuis le goal lié ou le dernier agent_id en DB
+        goal_type: str | None = None
+        goal_type_source: str | None = None
+        if thread.goal and thread.goal.type:
+            goal_type = thread.goal.type.value
+            goal_type_source = "goal"
+        else:
+            payload = await self.repo.get_last_assistant_payload(thread_id)
+            if payload:
+                agent_id = payload.get("agent_id")
+                if agent_id and agent_id != "free":
+                    goal_type = agent_id
+                    goal_type_source = "inferred"
+
+        effective_history = history
+        if summary:
+            effective_history = [
+                {"role": "system", "content": f"Résumé de la conversation précédente : {summary}"},
+                *history,
+            ]
+
+        goal_context: dict = {}
+        if thread.goal and thread.goal.context_data:
+            goal_context = dict(thread.goal.context_data)
+
+        # Enrichissement offres scrapées — ScrapedOfferService est sync/pgvector
+        # → thread isolé avec session sync propre pour ne pas bloquer asyncio
+        goal_context = await _enrich_with_offers_async(
+            goal_context, goal_type, profile or {}, content,
+        )
+
+        ctx = AgentContext(
+            user_id=user_id,
+            message=enriched_content,
+            history=effective_history,
+            profile=profile or {},
+            goal_type=goal_type,
+            goal_type_source=goal_type_source,
+            goal_context=goal_context,
+            image_data=image_data,
+        )
+        return thread, ctx
+
+    async def _save_assistant(
+        self,
+        thread: ChatThread,
+        agent_response: AgentResponse,
+        original_content: str,
+    ) -> ChatMessage:
+        msg = await self.repo.add_message(
+            thread_id=thread.id,
+            role=MessageRole.assistant,
+            content=agent_response.explanation,
+            payload=agent_response.model_dump(),
+        )
+        if not thread.title and original_content:
+            thread.title = original_content[:100]
+            await self.repo.save(thread)
+        return msg
+
+    async def _post_process(
+        self, thread_id: uuid.UUID, user_id: uuid.UUID, llm,
+    ) -> None:
+        """Compression mémoire (async) + extraction d'intention (thread sync)."""
+        try:
+            await self.memory.maybe_compress(thread_id, llm)
+        except Exception as exc:
+            logger.warning("Async memory compression failed for thread %s: %s", thread_id, exc)
+
+        # IntentExtractorService est sync — s'exécute dans un thread propre
+        try:
+            await asyncio.to_thread(
+                _sync_extract_intent, thread_id, user_id, llm,
+            )
+        except Exception as exc:
+            logger.warning("Async intent extraction failed for thread %s: %s", thread_id, exc)
+
+    # ── Points d'entrée publics ───────────────────────────────────────────────
+
+    async def handle_message(
+        self,
+        thread_id: uuid.UUID,
+        user_id: uuid.UUID,
+        content: str,
+        profile: dict | None = None,
+        user_payload: dict | None = None,
+        attachment_ids: list[str] | None = None,
+    ) -> tuple[ChatMessage, AgentResponse]:
+        bind_chat_context(thread_id=str(thread_id), user_id=str(user_id))
+        thread, ctx = await self._prepare_context(
+            thread_id, user_id, content, profile, user_payload, attachment_ids,
+        )
+
+        llm = get_llm_provider()
+        orchestrator = Orchestrator(llm)
+        try:
+            agent_response = await orchestrator.route(ctx)
+        except Exception as exc:
+            logger.error("Async orchestration failed for thread %s: %s", thread_id, exc)
+            agent_response = AgentResponse(
+                explanation="Désolé, je n'ai pas pu traiter ta demande. Réessaie dans quelques instants.",
+                agent_id="error",
+            )
+
+        assistant_msg = await self._save_assistant(thread, agent_response, content)
+        await self._post_process(thread_id, user_id, llm)
+        return assistant_msg, agent_response
+
+    async def stream_message(
+        self,
+        thread_id: uuid.UUID,
+        user_id: uuid.UUID,
+        content: str,
+        profile: dict | None = None,
+        attachment_ids: list[str] | None = None,
+    ) -> AsyncIterator[ProgressEvent]:
+        bind_chat_context(thread_id=str(thread_id), user_id=str(user_id))
+        thread, ctx = await self._prepare_context(
+            thread_id, user_id, content, profile, attachment_ids=attachment_ids,
+        )
+
+        llm = get_llm_provider()
+        orchestrator = Orchestrator(llm)
+        agent_response = None
+
+        try:
+            async for event in orchestrator.stream_route(ctx):
+                if event.type == EventType.done and event.agent_response:
+                    agent_response = event.agent_response
+                    await self._save_assistant(thread, agent_response, content)
+                yield event
+        except Exception as exc:
+            logger.error("Async stream orchestration failed for thread %s: %s", thread_id, exc)
+            agent_response = AgentResponse(
+                explanation="Désolé, je n'ai pas pu traiter ta demande. Réessaie dans quelques instants.",
+                agent_id="error",
+            )
+            await self._save_assistant(thread, agent_response, content)
+            yield ProgressEvent(
+                type=EventType.done,
+                agent_id="error",
+                agent_response=agent_response,
+            )
+
+        if agent_response:
+            await self._post_process(thread_id, user_id, llm)
+
+
+# ── Helpers de thread sync (appelés via asyncio.to_thread) ─────────────────
+
+
+def _sync_load_attachments(
+    attachment_ids: list[str],
+    message_id: uuid.UUID,
+    user_id: uuid.UUID,
+    original_content: str,
+) -> tuple[str, list[dict]]:
+    """Lie les pièces jointes et extrait texte/images. Exécuté dans un thread sync."""
+    import base64
+    from app.core.database import SessionLocal
+    from app.services.document_service import ATTACHMENTS_DIR, DocumentService
+
+    parsed_ids: list[uuid.UUID] = []
+    for raw_id in attachment_ids:
+        try:
+            parsed_ids.append(uuid.UUID(raw_id))
+        except ValueError:
+            pass
+
+    texts: list[str] = []
+    image_data: list[dict] = []
+    with SessionLocal() as sync_db:
+        doc_svc = DocumentService(sync_db)
+        attachments = doc_svc.link_attachments_to_message(parsed_ids, message_id, user_id)
+        for att in attachments:
+            if att.extracted_text:
+                texts.append(f"[Contenu du fichier '{att.filename}' :\n{att.extracted_text}]")
+            elif att.content_type.startswith("image/"):
+                try:
+                    raw_bytes = (ATTACHMENTS_DIR / att.storage_key).read_bytes()
+                    image_data.append({
+                        "media_type": att.content_type,
+                        "data": base64.standard_b64encode(raw_bytes).decode(),
+                    })
+                except Exception as exc:
+                    logger.warning("Failed to load image attachment %s: %s", att.id, exc)
+
+    enriched = "\n\n".join(texts) + "\n\n" + original_content if texts else original_content
+    return enriched, image_data
+
+
+async def _enrich_with_offers_async(
+    goal_context: dict,
+    goal_type: str | None,
+    profile: dict,
+    content: str,
+) -> dict:
+    """Enrichit goal_context avec des offres scrapées (ScrapedOfferService sync/pgvector).
+
+    Lance la recherche dans un thread propre avec une session sync isolée
+    pour ne pas bloquer la boucle asyncio.
+    """
+    if not goal_type or goal_type in ("document", "free"):
+        return goal_context
+
+    def _sync_search() -> list[dict]:
+        from app.core.database import SessionLocal
+        with SessionLocal() as sync_db:
+            svc = ScrapedOfferService(sync_db)
+            return svc.search_for_agent(intent=goal_type, profile=profile, message=content)
+
+    try:
+        offers = await asyncio.to_thread(_sync_search)
+        if offers:
+            return {**goal_context, "relevant_offers": offers}
+    except Exception:
+        logger.debug("Async offer enrichment skipped", exc_info=True)
+    return goal_context
+
+
+def _sync_extract_intent(
+    thread_id: uuid.UUID,
+    user_id: uuid.UUID,
+    llm,
+) -> None:
+    """Extraction d'intention via IntentExtractorService (sync). Exécuté dans un thread."""
+    import asyncio as _asyncio
+    from app.core.database import SessionLocal
+
+    with SessionLocal() as sync_db:
+        from app.services.intent_extractor import IntentExtractorService
+        extractor = IntentExtractorService(sync_db)
+        # maybe_extract est async — on crée une boucle locale dans le thread
+        _asyncio.run(extractor.maybe_extract(thread_id, user_id, llm))

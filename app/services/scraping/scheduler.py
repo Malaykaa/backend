@@ -208,13 +208,36 @@ async def _run_match_job() -> None:
         lock_db.close()  # libère le pg_advisory_lock
 
 
+async def _run_daily_scraping() -> None:
+    """Run combiné Apify léger + tous les Perplexity — exécuté 3x/jour lun-sam."""
+    await _run_apify_light()
+    await _run_perplexity_daily()
+    await _run_perplexity_search_africa()
+    await _run_perplexity_search_global()
+
+
 def start_scheduler() -> None:
-    """Démarre le scheduler si SCHEDULER_ENABLED=true."""
+    """Démarre le scheduler si les conditions d'activation sont réunies.
+
+    Logique d'activation (court-circuit dans l'ordre) :
+    1. SCHEDULER_ENABLED=false → ne démarre jamais dans ce process.
+    2. SCHEDULER_WORKER_ONLY=true → ne démarre que si SCHEDULER_WORKER=true
+       est aussi défini (worker désigné explicitement).
+    3. Sinon → démarre normalement (single-process ou Option A multi-worker).
+    """
     global _scheduler
 
     settings = get_settings()
+
     if not settings.scheduler_enabled:
         logger.info("Scheduler disabled (SCHEDULER_ENABLED=false)")
+        return
+
+    if settings.scheduler_worker_only and not settings.scheduler_worker:
+        logger.info(
+            "Scheduler skipped — SCHEDULER_WORKER_ONLY=true mais SCHEDULER_WORKER=false "
+            "pour ce process (PID %d)", __import__("os").getpid(),
+        )
         return
 
     if _scheduler is not None:
@@ -223,38 +246,30 @@ def start_scheduler() -> None:
 
     _scheduler = AsyncIOScheduler()
 
-    # Apify light : 4x/jour (06h, 10h, 14h, 18h UTC)
+    # Scraping combiné (Apify léger + Perplexity) : 3x/jour lun-sam
+    # 07h30, 13h00, 17h30 GMT — chaque sous-job a son propre advisory lock.
+    if settings.scraping_enabled:
+        for slot_hour, slot_minute, slot_id in [
+            (7, 30, "morning"),
+            (13, 0, "noon"),
+            (17, 30, "evening"),
+        ]:
+            _scheduler.add_job(
+                _run_daily_scraping, "cron",
+                day_of_week="mon-sat",
+                hour=slot_hour, minute=slot_minute,
+                id=f"daily_scraping_{slot_id}",
+            )
+        logger.info("Scheduled daily scraping 3x/day Mon–Sat (07:30, 13:00, 17:30 GMT)")
+
+    # Apify heavy : dimanche uniquement (07h00, 15h00 GMT)
     if settings.scraping_enabled and settings.apify_api_token:
-        _scheduler.add_job(_run_apify_light, "cron", hour="6,10,14,18", id="apify_light")
-        logger.info("Scheduled Apify light scraping (4x/day)")
-
-    # Apify heavy : 2x/dimanche (07h, 15h UTC)
-    if settings.scraping_enabled and settings.apify_api_token:
-        _scheduler.add_job(_run_apify_heavy, "cron", day_of_week="sun", hour="7,15", id="apify_heavy")
-        logger.info("Scheduled Apify heavy scraping (2x/sunday)")
-
-    # Perplexity chat/completions — analyse qualitative : 2x/jour (08h, 15h UTC)
-    if settings.scraping_enabled and settings.perplexity_api_key:
-        _scheduler.add_job(_run_perplexity_daily, "cron", hour="8,15", id="perplexity_daily")
-        logger.info("Scheduled Perplexity chat scraping (2x/day @ 08h 15h)")
-
-    # Perplexity /search Afrique — catalogue Africa : 06h UTC
-    if settings.scraping_enabled and settings.perplexity_api_key:
         _scheduler.add_job(
-            _run_perplexity_search_africa, "cron",
-            hour="6", minute="0",
-            id="perplexity_search_africa",
+            _run_apify_heavy, "cron",
+            day_of_week="sun", hour="7,15",
+            id="apify_heavy",
         )
-        logger.info("Scheduled Perplexity /search Africa (1x/day @ 06h UTC)")
-
-    # Perplexity /search Mondial — catalogue global : 18h UTC
-    if settings.scraping_enabled and settings.perplexity_api_key:
-        _scheduler.add_job(
-            _run_perplexity_search_global, "cron",
-            hour="18", minute="0",
-            id="perplexity_search_global",
-        )
-        logger.info("Scheduled Perplexity /search Global (1x/day @ 18h UTC)")
+        logger.info("Scheduled Apify heavy (Sunday 07:00 & 15:00 GMT)")
 
     # Matching automatique : toutes les heures, à xx:30 pour décaler
     # des fenêtres de scraping (laisse l'indexation embeddings se terminer).

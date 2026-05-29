@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.cookies import ACCESS_COOKIE, REFRESH_COOKIE
 from app.core.deps import get_current_user
 from app.core.security import hash_password
 from app.main import app
@@ -67,8 +68,8 @@ class TestRegister:
         data = resp.json()
         assert data["user"]["email"] == "new@example.com"
         assert "accessToken" in data
-        assert "99eange_jwt" in resp.cookies
-        assert "99eange_rt" in resp.cookies
+        assert ACCESS_COOKIE in resp.cookies
+        assert REFRESH_COOKIE in resp.cookies
 
     def test_register_duplicate_email(self, client: TestClient):
         with patch("app.services.auth_service.UserRepository") as MockRepo:
@@ -121,7 +122,7 @@ class TestLogin:
         data = resp.json()
         assert data["user"]["email"] == "login@example.com"
         assert "accessToken" in data
-        assert "99eange_jwt" in resp.cookies
+        assert ACCESS_COOKIE in resp.cookies
 
     def test_login_wrong_password(self, client: TestClient):
         user = _make_user("login@example.com", "correctpass")
@@ -244,7 +245,7 @@ class TestVerifyOtpRegister:
         assert resp.status_code == 201
         data = resp.json()
         assert "accessToken" in data
-        assert "99eange_jwt" in resp.cookies
+        assert ACCESS_COOKIE in resp.cookies
 
     def test_verify_otp_register_invalid_code(self, client: TestClient):
         resp = client.post(
@@ -291,7 +292,7 @@ class TestLoginPhone:
         data = resp.json()
         assert "accessToken" in data
         assert data["user"]["email"] == "2250700000000@malaykaa.app"
-        assert "99eange_jwt" in resp.cookies
+        assert ACCESS_COOKIE in resp.cookies
 
     def test_login_phone_wrong_password(self, client: TestClient):
         user = _make_user("2250700000000@malaykaa.app", "correctpass", phone="2250700000000")

@@ -161,7 +161,10 @@ class MatchRunner:
             },
         )
 
-        # 2. Notif WhatsApp si phone + provider configuré (skip silencieux sinon).
+        # 2. Notifications in-app pour les offres avec score >= 80%
+        self._create_match_notifications(user_id, offers)
+
+        # 3. Notif WhatsApp si phone + provider configuré (skip silencieux sinon).
         phone = self._user_phone(user_id)
         if phone:
             try:
@@ -198,6 +201,47 @@ class MatchRunner:
         return self.db.execute(
             select(User.phone).where(User.id == user_id)
         ).scalar_one_or_none()
+
+    def _create_match_notifications(
+        self, user_id: uuid.UUID, offers: list[dict]
+    ) -> None:
+        """Crée des notifications in-app pour les offres avec score normalisé >= 80%.
+
+        score brut pgvector (0–75) → match_pct = min(99, round(score / 75 * 100))
+        Seuil 80 % → score brut >= 60.
+        """
+        from app.models.notification import UserNotification
+
+        HIGH_SCORE_THRESHOLD = 60.0  # brut pgvector ≈ 80 % normalisé
+        created = 0
+        for o in offers:
+            raw_score = float(o.get("relevance_score") or 0.0)
+            if raw_score < HIGH_SCORE_THRESHOLD:
+                continue
+            score_pct = min(99, round(raw_score / 75.0 * 100))
+            offer_id_raw = o.get("id") or o.get("offer_id")
+            try:
+                offer_id = uuid.UUID(str(offer_id_raw)) if offer_id_raw else None
+            except ValueError:
+                offer_id = None
+
+            notif = UserNotification(
+                user_id=user_id,
+                offer_id=offer_id,
+                offer_title=(o.get("title") or "")[:500] or None,
+                offer_url=(o.get("url") or "")[:2048] or None,
+                offer_type=o.get("type") or None,
+                score_pct=score_pct,
+                seen=False,
+            )
+            self.db.add(notif)
+            created += 1
+
+        if created:
+            logger.info(
+                "MatchRunner: %d notification(s) haute-pertinence créée(s) pour user %s",
+                created, user_id,
+            )
 
     def _mark_run(self, user_id: uuid.UUID, now: datetime) -> None:
         self.db.execute(

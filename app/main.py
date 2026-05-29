@@ -1,4 +1,6 @@
-﻿from fastapi import FastAPI, Request
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
@@ -11,24 +13,34 @@ from app.core.config import get_settings, validate_security_settings
 from app.core.logging_config import bind_request_context, configure_logging
 from app.core.rate_limit import limiter
 from app.routers import auth, documents, files, goals, opportunities, plans, tracking, users
-from app.routers import action_adapter, admin_scraping, admin_router, chat, recommendations_router
+from app.routers import action_adapter, admin_scraping, admin_router, chat, recommendations_router, trends, notifications
 
 settings = get_settings()
 
-# Configurer structlog dÃ¨s que possible â€” avant toute instanciation de logger.
+# Configurer structlog dès que possible — avant toute instanciation de logger.
 configure_logging(environment=settings.environment)
 
 logger = get_logger(__name__)
 
-# Fail-fast au boot : refuse de dÃ©marrer en staging/prod si la config est dangereuse.
+# Fail-fast au boot : refuse de démarrer en staging/prod si la config est dangereuse.
 validate_security_settings(settings)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from app.services.scraping.scheduler import start_scheduler, stop_scheduler
+    start_scheduler()
+    yield
+    stop_scheduler()
+
 
 app = FastAPI(
     title="Malayka API",
     version="0.1.0",
-    description="Moteur d'exÃ©cution et d'opportunitÃ©s â€” API Backend",
-    docs_url="/api/docs",
-    openapi_url="/api/openapi.json",
+    description="Moteur d'exécution et d'opportunités — API Backend",
+    docs_url="/api/docs" if not settings.is_production else None,
+    openapi_url="/api/openapi.json" if not settings.is_production else None,
+    lifespan=lifespan,
 )
 
 app.state.limiter = limiter
@@ -46,7 +58,7 @@ app.add_middleware(
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    # Bind le contexte de la requÃªte â€” tous les logs dans ce scope l'hÃ©ritent.
+    # Bind le contexte de la requÃªte â€" tous les logs dans ce scope l'hÃ©ritent.
     request_id = bind_request_context(
         method=request.method,
         path=request.url.path,
@@ -69,7 +81,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 app.include_router(auth.router)
 app.include_router(users.router)
-# Router /chat unifiÃ© â€” sert Ã  la fois les routes de base et les routes
+# Router /chat unifiÃ© â€" sert Ã  la fois les routes de base et les routes
 # enrichies (presetKey, plan, pour-moiâ€¦) historiquement portÃ©es par
 # frontend_adapter, dÃ©sormais consolidÃ©es dans un seul module.
 app.include_router(chat.router)
@@ -86,18 +98,9 @@ app.include_router(admin_router.router)
 # Admin scraping : endpoints de dÃ©clenchement manuel + stats
 app.include_router(admin_scraping.router)
 app.include_router(recommendations_router.router)
+app.include_router(trends.router)
+app.include_router(notifications.router)
 
-
-@app.on_event("startup")
-async def _startup() -> None:
-    from app.services.scraping.scheduler import start_scheduler
-    start_scheduler()
-
-
-@app.on_event("shutdown")
-async def _shutdown() -> None:
-    from app.services.scraping.scheduler import stop_scheduler
-    stop_scheduler()
 
 
 @app.get("/health", tags=["system"])

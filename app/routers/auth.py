@@ -6,12 +6,14 @@ from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, Request, Respon
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.cookies import ACCESS_COOKIE, REFRESH_COOKIE
 from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.core.rate_limit import limiter
 from app.models.user import User
 from app.schemas.auth import (
     AuthResultResponse,
+    ChangePasswordRequest,
     LoginPhoneRequest,
     LoginRequest,
     MeResponse,
@@ -34,13 +36,13 @@ _COOKIE_KWARGS: dict = {
 
 def _set_auth_cookies(response: Response, access: str, refresh: str) -> None:
     response.set_cookie(
-        "99eange_jwt",
+        ACCESS_COOKIE,
         access,
         max_age=settings.access_token_expire_minutes * 60,
         **_COOKIE_KWARGS,
     )
     response.set_cookie(
-        "99eange_rt",
+        REFRESH_COOKIE,
         refresh,
         max_age=settings.refresh_token_expire_days * 86400,
         **_COOKIE_KWARGS,
@@ -153,12 +155,12 @@ def refresh_token(
     request: Request,
     response: Response,
     db: Annotated[Session, Depends(get_db)],
-    refresh_token: Annotated[str | None, Cookie(alias="99eange_rt")] = None,
+    refresh_token: Annotated[str | None, Cookie(alias=REFRESH_COOKIE)] = None,
 ):
     from app.core.exceptions import UnauthorizedError
 
     if not refresh_token:
-        raise UnauthorizedError("Cookie 99eange_rt manquant.")
+        raise UnauthorizedError(f"Cookie {REFRESH_COOKIE} manquant.")
     service = AuthService(db)
     new_access, new_refresh = service.refresh(refresh_token)
     _set_auth_cookies(response, new_access, new_refresh)
@@ -171,10 +173,25 @@ def get_me(
     return {"user": {"id": str(current_user.id), "email": current_user.email, "phone": current_user.phone, "role": current_user.role.value if current_user.role else "b2c", "is_active": current_user.is_active, "created_at": current_user.created_at.isoformat()}}
 
 
+@router.post("/change-password")
+@limiter.limit("5/hour")
+def change_password(
+    request: Request,
+    body: ChangePasswordRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    """Change le mot de passe de l'utilisateur connecté."""
+    service = AuthService(db)
+    service.change_password(current_user, body.old_password, body.new_password)
+    db.commit()
+    return {"detail": "Mot de passe modifié."}
+
+
 @router.post("/logout")
 def logout(
     response: Response,
-    refresh_token: Annotated[str | None, Cookie(alias="99eange_rt")] = None,
+    refresh_token: Annotated[str | None, Cookie(alias=REFRESH_COOKIE)] = None,
 ):
     if refresh_token:
         from app.core.security import decode_token
@@ -184,7 +201,7 @@ def logout(
             revoke(refresh_token, exp=int(payload.get("exp", 0)))
         except Exception:
             pass  # token invalide ou expiré — les cookies sont supprimés dans tous les cas
-    response.delete_cookie("99eange_jwt", path="/")
-    response.delete_cookie("99eange_rt", path="/")
+    response.delete_cookie(ACCESS_COOKIE, path="/")
+    response.delete_cookie(REFRESH_COOKIE, path="/")
     return {"detail": "Déconnecté."}
 

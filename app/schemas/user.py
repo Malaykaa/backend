@@ -6,6 +6,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.models.user import Gender, PrimaryRole
 
+# Mapping des valeurs frontend → valeurs DB pour les enums
+_GENDER_NORMALIZE = {"male": "M", "female": "F"}
+_PRIMARY_ROLE_NORMALIZE = {"jobseeker": "job_seeker"}
+
 MIN_AGE = 16
 
 
@@ -29,6 +33,18 @@ class ProfileUpdate(BaseModel):
     goals: dict | list | None = None
     preferred_content: str | None = Field(default=None, max_length=200)
     cv_url: str | None = None
+
+    @field_validator("gender", mode="before")
+    @classmethod
+    def normalize_gender(cls, v: str | None) -> str | None:
+        # Frontend sends "male"/"female"; DB Gender enum stores "M"/"F"
+        return _GENDER_NORMALIZE.get(v, v) if v is not None else v
+
+    @field_validator("primary_role", mode="before")
+    @classmethod
+    def normalize_primary_role(cls, v: str | None) -> str | None:
+        # Frontend sends "jobseeker"; DB PrimaryRole enum stores "job_seeker"
+        return _PRIMARY_ROLE_NORMALIZE.get(v, v) if v is not None else v
 
     @model_validator(mode="before")
     @classmethod

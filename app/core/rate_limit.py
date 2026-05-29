@@ -11,19 +11,21 @@ from fastapi import Request
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
+from app.core.cookies import ACCESS_COOKIE
+
 limiter = Limiter(key_func=get_remote_address)
 
 
 def get_user_key(request: Request) -> str:
     """Clé de rate-limit basée sur l'user_id extrait du JWT.
 
-    Lit le cookie 99eange_jwt, ou le header Authorization Bearer.
+    Lit le cookie ACCESS_COOKIE, ou le header Authorization Bearer.
     Retourne 'user:{sub}' si le token est valide, sinon l'IP distante.
     Utilisé pour les endpoints LLM/SSE afin de limiter par compte.
     """
     from app.core.security import decode_token  # import local — évite circularité au boot
 
-    token = request.cookies.get("99eange_jwt")
+    token = request.cookies.get(ACCESS_COOKIE)
     if not token:
         auth = request.headers.get("authorization", "")
         if auth.startswith("Bearer "):

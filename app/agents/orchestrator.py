@@ -26,6 +26,7 @@ from app.agents.search_trigger import build_search_query, should_search
 from app.agents.study_grant_agent import StudyGrantAgent
 from app.agents.tender_agent import TenderAgent
 from app.agents.triage import PlanDecision, Triage, TriageResult
+from app.agents.types import AgentMode, GoalType
 from app.llm.base import LLMProvider
 from app.services.perplexity_search_service import get_perplexity_search_service
 
@@ -89,17 +90,17 @@ Ton rôle est d'orienter, pas de te substituer à un expert d'un autre domaine."
         self.AGENT_ID = agent_id
 
 
-# Registry des agents spécialisés
+# Registry des agents spécialisés — clés typées via GoalType pour éviter les fautes de frappe
 _AGENT_REGISTRY: dict[str, type | None] = {
-    "exam": ExamAgent,
-    "scholarship": ScholarshipAgent,
-    "funding": FundingAgent,
-    "freelance": FreelanceAgent,
-    "tender": TenderAgent,
-    "study_grant": StudyGrantAgent,
-    "career": CareerAgent,
-    "document": DocumentAgent,
-    "free": None,
+    GoalType.EXAM:        ExamAgent,
+    GoalType.SCHOLARSHIP: ScholarshipAgent,
+    GoalType.FUNDING:     FundingAgent,
+    GoalType.FREELANCE:   FreelanceAgent,
+    GoalType.TENDER:      TenderAgent,
+    GoalType.STUDY_GRANT: StudyGrantAgent,
+    GoalType.CAREER:      CareerAgent,
+    GoalType.DOCUMENT:    DocumentAgent,
+    GoalType.FREE:        None,
 }
 
 
@@ -158,7 +159,7 @@ class Orchestrator:
         # Pré-check déterministe : demande explicite de document formaté
         # Bypass le triage LLM pour les cas évidents → économise tokens + fiable
         if self._is_document_request(ctx.message):
-            agent = self._get_agent("document")
+            agent = self._get_agent(GoalType.DOCUMENT)
             return await agent.process(ctx)
 
         # Si le goal_type est déjà connu
@@ -167,8 +168,8 @@ class Orchestrator:
             triage_result = await self.triage.analyze(ctx.message, ctx.history)
 
             # mode=generate a priorité absolue → DocumentAgent
-            if triage_result.mode == "generate":
-                agent = self._get_agent("document")
+            if triage_result.mode == AgentMode.GENERATE:
+                agent = self._get_agent(GoalType.DOCUMENT)
                 ctx = self._enrich_ctx_for_generate(ctx, triage_result)
             elif triage_result.confidence >= 0.8 and triage_result.intent != ctx.goal_type:
                 # L'utilisateur a clairement changé de sujet → rerouter
@@ -209,7 +210,7 @@ class Orchestrator:
         # Pré-check déterministe : demande explicite de document formaté
         if self._is_document_request(ctx.message):
             yield ProgressEvent(type=EventType.planning, content="")
-            plan = PlanDecision(mode="direct", agent_type="document")
+            plan = PlanDecision(mode=AgentMode.DIRECT, agent_type=GoalType.DOCUMENT)
             async for event in self.engine.execute(plan, ctx):
                 yield event
             return
@@ -222,7 +223,7 @@ class Orchestrator:
             triage_result = await self.triage.analyze(ctx.message, ctx.history)
 
             # mode=generate a priorité absolue → DocumentAgent
-            if triage_result.mode == "generate":
+            if triage_result.mode == AgentMode.GENERATE:
                 yield ProgressEvent(type=EventType.planning, content="")
                 ctx = self._enrich_ctx_for_generate(ctx, triage_result)
                 plan = triage_result.to_plan_decision()
@@ -271,7 +272,7 @@ class Orchestrator:
         plan = triage_result.to_plan_decision()
         ctx = self._enrich_ctx_for_generate(ctx, triage_result)
 
-        if triage_result.mode == "generate":
+        if triage_result.mode == AgentMode.GENERATE:
             yield ProgressEvent(type=EventType.planning, content="")
 
         # Exécution via l'engine
@@ -303,7 +304,7 @@ class Orchestrator:
     @staticmethod
     def _enrich_ctx_for_generate(ctx: AgentContext, triage_result: TriageResult) -> AgentContext:
         """Enrichit le contexte avec action_type quand mode=generate."""
-        if triage_result.mode != "generate" or not triage_result.action_type:
+        if triage_result.mode != AgentMode.GENERATE or not triage_result.action_type:
             return ctx
         enriched_context = {**ctx.goal_context, "document_type": triage_result.action_type}
         return ctx.model_copy(update={"goal_context": enriched_context})
@@ -313,4 +314,4 @@ class Orchestrator:
         registered_cls = _AGENT_REGISTRY.get(intent)
         if registered_cls is not None:
             return registered_cls(llm=self.llm)
-        return _GenericAgent(agent_id=intent or "free", llm=self.llm)
+        return _GenericAgent(agent_id=intent or GoalType.FREE, llm=self.llm)

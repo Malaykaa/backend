@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -21,8 +21,10 @@ from app.core.deps import get_current_user
 from app.llm import get_llm_provider
 from app.models.user import User
 from app.models.user_offer_feedback import FEEDBACK_SCORE_DELTA, FeedbackAction
+from app.models.scraped_offer import ScrapedOfferType
 from app.repositories.feedback_repo import FeedbackRepository
 from app.repositories.intent_repo import IntentRepository
+from app.repositories.scraped_offer_repo import ScrapedOfferRepository
 from app.services.llm_rescorer import LLMRescorer, llm_score_to_bonus
 from app.services.scraped_offer_service import ScrapedOfferService
 
@@ -226,6 +228,60 @@ async def get_propositions(
             source="scraped",
         )
         for c in top
+    ]
+
+
+@router.get("/browse", response_model=list[RecommendationItem])
+def browse_offers(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    offer_types: str | None = Query(default=None, description="Types d'offres séparés par virgule, ex: scholarship,grant"),
+    country: str | None = Query(default=None),
+    skill: str | None = Query(default=None),
+    max_age: int = Query(default=60, le=180, description="Âge max des offres en jours"),
+    limit: int = Query(default=50, le=100),
+) -> list[RecommendationItem]:
+    """Parcourir les offres avec filtres (depuis la page Tendances).
+
+    Contrairement à /propositions (scoring LLM+intent), cet endpoint
+    interroge directement la table scraped_offers avec des filtres explicites.
+    """
+    repo = ScrapedOfferRepository(db)
+
+    parsed_types: list[ScrapedOfferType] = []
+    if offer_types:
+        for raw in offer_types.split(","):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                parsed_types.append(ScrapedOfferType(raw))
+            except ValueError:
+                pass
+
+    keywords = [skill] if skill else None
+
+    offers = repo.browse(
+        offer_types=parsed_types or None,
+        country=country,
+        keywords=keywords,
+        limit=limit,
+        max_age_days=max_age,
+    )
+
+    return [
+        RecommendationItem(
+            offer_ref=f"scraped:{o.id}",
+            title=o.title,
+            company=o.company,
+            location=o.location,
+            url=o.url,
+            type=o.offer_type.value if o.offer_type else None,
+            score=round(float(o.quality_score or 0.5), 2),
+            source="scraped",
+        )
+        for o in offers
+        if o.title
     ]
 
 

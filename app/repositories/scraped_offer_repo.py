@@ -234,6 +234,57 @@ class ScrapedOfferRepository(BaseRepository[ScrapedOffer]):
             ).scalar_one()
         )
 
+    def browse(
+        self,
+        offer_types: list[ScrapedOfferType] | None = None,
+        country: str | None = None,
+        keywords: list[str] | None = None,
+        limit: int = 50,
+        max_age_days: int = 60,
+    ) -> list[ScrapedOffer]:
+        """Recherche filtrée pour la page Parcourir (liens depuis Tendances).
+
+        Filtre par type(s) d'offre, pays et/ou mots-clés libres (skill).
+        Tri : quality_score DESC, scraped_at DESC.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+        stmt = select(ScrapedOffer).where(
+            ScrapedOffer.is_active.is_(True),
+            ScrapedOffer.scraped_at >= cutoff,
+            or_(
+                ScrapedOffer.expires_at.is_(None),
+                ScrapedOffer.expires_at > datetime.now(timezone.utc),
+            ),
+        )
+        if offer_types:
+            stmt = stmt.where(ScrapedOffer.offer_type.in_(offer_types))
+        if country:
+            c = country.lower()
+            stmt = stmt.where(
+                or_(
+                    func.lower(ScrapedOffer.location).contains(c),
+                    func.lower(ScrapedOffer.location).in_(
+                        ["africa", "afrique", "international", "global", "remote"]
+                    ),
+                )
+            )
+        if keywords:
+            kw_filters = []
+            for term in keywords[:4]:
+                t = f"%{term.lower()}%"
+                kw_filters.append(
+                    or_(
+                        func.lower(ScrapedOffer.title).like(t),
+                        func.lower(ScrapedOffer.description).like(t),
+                    )
+                )
+            stmt = stmt.where(or_(*kw_filters))
+        stmt = stmt.order_by(
+            ScrapedOffer.quality_score.desc().nulls_last(),
+            ScrapedOffer.scraped_at.desc(),
+        ).limit(limit)
+        return list(self.db.execute(stmt).scalars().all())
+
     def get_stats(self) -> dict[str, int]:
         """Stats rapides pour l'admin."""
         total = self.db.execute(

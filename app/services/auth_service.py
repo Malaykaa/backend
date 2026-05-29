@@ -195,6 +195,16 @@ class AuthService:
             raise UnauthorizedError("Utilisateur introuvable.")
         return user
 
+    def change_password(self, user: User, old_password: str, new_password: str) -> None:
+        """Change le mot de passe d'un utilisateur authentifié.
+
+        Vérifie l'ancien mot de passe avant d'accepter le nouveau.
+        L'appelant est responsable du db.commit().
+        """
+        if not verify_password(old_password, user.password_hash):
+            raise UnauthorizedError("Mot de passe actuel incorrect.")
+        user.password_hash = hash_password(new_password)
+
     # ── Privé ────────────────────────────────────────────
 
     def _verify_otp_code(self, phone: str, code: str) -> bool:

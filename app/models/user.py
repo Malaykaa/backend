@@ -32,7 +32,7 @@ class User(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email: Mapped[str | None] = mapped_column(String(320), unique=True, nullable=True, index=True)
-    phone: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(30), unique=True, nullable=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), nullable=False, default=UserRole.b2c)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -46,6 +46,7 @@ class User(Base):
     threads: Mapped[list["ChatThread"]] = relationship(back_populates="user", cascade="all, delete-orphan")  # noqa: F821
     documents: Mapped[list["Document"]] = relationship(back_populates="user", cascade="all, delete-orphan")  # noqa: F821
     user_opportunities: Mapped[list["UserOpportunity"]] = relationship(back_populates="user", cascade="all, delete-orphan")  # noqa: F821
+    notifications: Mapped[list["UserNotification"]] = relationship(back_populates="user", cascade="all, delete-orphan")  # noqa: F821
 
 
 class Profile(Base):

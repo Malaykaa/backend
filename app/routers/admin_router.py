@@ -25,7 +25,16 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 def _pag(total, page, size): return {"total": total, "page": page, "size": size}
 
 def _user_item(u, p, tc, gc, dc):
-    return AdminUserItem(id=str(u.id), email=u.email, phone=u.phone, role=u.role.value if u.role else "b2c", is_active=u.is_active, created_at=u.created_at, first_name=p.first_name if p else None, last_name=p.last_name if p else None, primary_role=p.primary_role.value if p and p.primary_role else None, country=p.country if p else None, threads_count=tc or 0, goals_count=gc or 0, documents_count=dc or 0)
+    return AdminUserItem(
+        id=str(u.id), email=u.email, phone=u.phone,
+        role=getattr(u.role, "value", u.role) if u.role else "b2c",
+        is_active=u.is_active, created_at=u.created_at,
+        first_name=p.first_name if p else None,
+        last_name=p.last_name if p else None,
+        primary_role=getattr(p.primary_role, "value", p.primary_role) if p and p.primary_role else None,
+        country=p.country if p else None,
+        threads_count=tc or 0, goals_count=gc or 0, documents_count=dc or 0,
+    )
 
 def _ufilter(q_obj, q, role, active):
     if q:
@@ -70,7 +79,20 @@ def get_user(user_id: UUID, admin: Annotated[User, Depends(get_admin_user)], db:
     dc = db.query(func.count(Document.id)).filter(Document.user_id == user_id).scalar() or 0
     rthreads = [AdminThreadItem(id=str(t.id), user_id=str(t.user_id), user_email=u.email, title=t.title, status=t.status.value, message_count=t.message_count, created_at=t.created_at) for t in db.query(ChatThread).filter(ChatThread.user_id == user_id).order_by(desc(ChatThread.created_at)).limit(5).all()]
     rgoals = [AdminGoalItem(id=str(g.id), user_id=str(g.user_id), user_email=u.email, type=g.type.value, status=g.status.value, preset_key=(g.context_data or {}).get("preset_key"), created_at=g.created_at, threads_count=db.query(func.count(ChatThread.id)).filter(ChatThread.goal_id == g.id).scalar() or 0) for g in db.query(Goal).filter(Goal.user_id == user_id).order_by(desc(Goal.created_at)).limit(5).all()]
-    return AdminUserDetail(id=str(u.id), email=u.email, phone=u.phone, role=u.role.value if u.role else "b2c", is_active=u.is_active, created_at=u.created_at, first_name=p.first_name if p else None, last_name=p.last_name if p else None, primary_role=p.primary_role.value if p and p.primary_role else None, country=p.country if p else None, threads_count=tc, goals_count=gc, documents_count=dc, domain=p.domain if p else None, field_of_study=p.field_of_study if p else None, city=p.city if p else None, birth_year=p.birth_year if p else None, gender=p.gender.value if p and p.gender else None, language=p.language if p else None, recent_threads=rthreads, recent_goals=rgoals)
+    return AdminUserDetail(
+        id=str(u.id), email=u.email, phone=u.phone,
+        role=getattr(u.role, "value", u.role) if u.role else "b2c",
+        is_active=u.is_active, created_at=u.created_at,
+        first_name=p.first_name if p else None, last_name=p.last_name if p else None,
+        primary_role=getattr(p.primary_role, "value", p.primary_role) if p and p.primary_role else None,
+        country=p.country if p else None,
+        threads_count=tc, goals_count=gc, documents_count=dc,
+        domain=p.domain if p else None, field_of_study=p.field_of_study if p else None,
+        city=p.city if p else None, birth_year=p.birth_year if p else None,
+        gender=getattr(p.gender, "value", p.gender) if p and p.gender else None,
+        language=p.language if p else None,
+        recent_threads=rthreads, recent_goals=rgoals,
+    )
 
 @router.patch("/users/{user_id}", response_model=AdminUserItem)
 def update_user(user_id: UUID, payload: AdminUserUpdate, admin: Annotated[User, Depends(get_admin_user)], db: Annotated[Session, Depends(get_db)]):

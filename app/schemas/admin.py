@@ -124,6 +124,102 @@ class AdminUserCreate(BaseModel):
             raise ValueError("email ou phone est obligatoire.")
 
 
+class AdminScrapingActorItem(BaseModel):
+    """Actor Apify géré depuis l'admin."""
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    actor_id: str
+    label: str
+    offer_type: str
+    source_name: str
+    normalizer_type: str
+    input_json: dict
+    run_mode: str
+    is_active: bool
+    notes: str | None
+    created_at: datetime
+
+
+class AdminScrapingActorCreate(BaseModel):
+    actor_id: str
+    label: str
+    offer_type: str = "opportunity"
+    source_name: str
+    normalizer_type: str = "web"
+    input_json: dict = {}
+    run_mode: str = "both"
+    notes: str | None = None
+
+    @field_validator("offer_type")
+    @classmethod
+    def offer_type_valid(cls, v: str) -> str:
+        valid = {"job","formation","grant","scholarship","partnership",
+                 "call_for_applications","opportunity","resource"}
+        if v not in valid:
+            raise ValueError(f"offer_type invalide: {', '.join(sorted(valid))}")
+        return v
+
+    @field_validator("normalizer_type")
+    @classmethod
+    def normalizer_valid(cls, v: str) -> str:
+        valid = {"indeed","linkedin_job","linkedin_post","google_jobs","facebook","web"}
+        if v not in valid:
+            raise ValueError(f"normalizer invalide: {', '.join(sorted(valid))}")
+        return v
+
+    @field_validator("run_mode")
+    @classmethod
+    def run_mode_valid(cls, v: str) -> str:
+        if v not in {"light","heavy","both"}:
+            raise ValueError("run_mode doit être light, heavy ou both")
+        return v
+
+
+class AdminScrapingActorUpdate(BaseModel):
+    label: str | None = None
+    offer_type: str | None = None
+    source_name: str | None = None
+    normalizer_type: str | None = None
+    input_json: dict | None = None
+    run_mode: str | None = None
+    is_active: bool | None = None
+    notes: str | None = None
+
+
+class AdminScrapingSourceItem(BaseModel):
+    """Source web de scraping gérée depuis l'admin."""
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    url: str
+    label: str | None
+    category: str
+    notes: str | None
+    is_active: bool
+    created_at: datetime
+
+
+class AdminScrapingSourceCreate(BaseModel):
+    url: str
+    label: str | None = None
+    category: str = "job_boards"
+    notes: str | None = None
+
+    @field_validator("category")
+    @classmethod
+    def category_valid(cls, v: str) -> str:
+        valid = {"job_boards", "opportunities", "grants", "scholarships", "call_for_applications"}
+        if v not in valid:
+            raise ValueError(f"Catégorie invalide. Valeurs: {', '.join(sorted(valid))}")
+        return v
+
+
+class AdminScrapingSourceUpdate(BaseModel):
+    label: str | None = None
+    category: str | None = None
+    notes: str | None = None
+    is_active: bool | None = None
+
+
 class AdminDeliverableItem(BaseModel):
     """Livrable genere par l'IA dans un thread chat (payload.deliverables)."""
     message_id: str

@@ -5,8 +5,6 @@ Aucune logique métier ici (SRP) : on délègue tout aux services et on transfor
 Enregistré AVANT le chat router dans main.py pour prendre priorité sur les routes identiques.
 """
 
-from __future__ import annotations
-
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -17,17 +15,19 @@ from app.core.rate_limit import limiter, get_user_key
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select as sa_select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session, joinedload
 
 from app.agents.events import EventType
+from app.core.async_database import get_async_db
 from app.core.database import get_db
-from app.core.deps import extract_profile, get_current_user
+from app.core.deps import extract_profile, get_async_current_user, get_current_user
 from app.core.exceptions import NotFoundError
 from app.core.preset_mapping import get_goal_type, get_preset_label, get_source_label
 from app.models.chat import ChatMessage, ChatThread, MessageRole, ThreadStatus
 from app.models.user import User
 from app.schemas.chat import MessageEdit, ThreadUpdate
-from app.services.chat_service import ChatService
+from app.services.chat_service import AsyncChatService, ChatService
 from app.services.document_service import DocumentService
 from app.services.goal_service import GoalService
 from app.services.message_formatter import format_sources, inject_markers, strip_sources_block
@@ -63,6 +63,7 @@ class FrontendMessageCreate(BaseModel):
     useAi: bool = True  # noqa: N815
     history: list[dict] | None = None
     metadata: dict | None = None
+    attachment_ids: list[str] | None = None  # UUIDs des pièces jointes uploadées
 
 
 # ── Schémas de réponse ──────────────────────────────────────
@@ -400,6 +401,7 @@ async def send_message(
         user_id=current_user.id,
         content=body.content,
         profile=profile,
+        attachment_ids=body.attachment_ids,
     )
 
     # Auto-persist plan si l'agent retourne des étapes et que le goal n'a pas encore de plan
@@ -513,10 +515,10 @@ async def stream_message(
     request: Request,
     thread_id: uuid.UUID,
     body: FrontendMessageCreate,
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_async_current_user)],
+    db: Annotated[AsyncSession, Depends(get_async_db)],
 ):
-    """Streaming SSE avec événements transformés au format frontend.
+    """Streaming SSE — async DB (asyncpg) pour ne jamais bloquer la boucle asyncio.
 
     Mapping des événements :
         planning     → generating
@@ -524,24 +526,32 @@ async def stream_message(
         step_complete → agent_done + {agentId}
         chunk        → token + {token}
         done         → done + {content, sources, qualityScore}
+
+    PlanService (sync) est exécuté dans un thread propre après le stream,
+    en attendant sa migration async.
     """
-    chat_svc = ChatService(db)
+    import asyncio as _asyncio
+
+    chat_svc = AsyncChatService(db)
     profile = extract_profile(current_user)
+    _user_id = current_user.id
 
     async def transform_events():
         async for event in chat_svc.stream_message(
             thread_id=thread_id,
-            user_id=current_user.id,
+            user_id=_user_id,
             content=body.content,
             profile=profile,
+            attachment_ids=body.attachment_ids,
         ):
-            # Auto-persist plan si l'agent retourne des steps dans l'event done
+            # PlanService est sync — exécuté dans un thread isolé après l'event done
             if event.type == EventType.done and event.agent_response:
-                PlanService(db).maybe_persist_from_response(
-                    thread_id, current_user.id, event.agent_response,
+                _resp_snapshot = event.agent_response
+                await _asyncio.to_thread(
+                    _sync_persist_plan, thread_id, _user_id, _resp_snapshot,
                 )
             yield format_chat_event(event)
-        db.commit()
+        await db.commit()
 
     return StreamingResponse(
         transform_events(),
@@ -745,3 +755,29 @@ def close_thread(
     thread.status = ThreadStatus.closed
     db.commit()
     return {"ok": True}
+
+
+# ── Helper sync pour PlanService (exécuté via asyncio.to_thread) ─────────────
+
+
+def _sync_persist_plan(
+    thread_id: uuid.UUID,
+    user_id: uuid.UUID,
+    agent_response,
+) -> None:
+    """Persiste le plan depuis la réponse agent (PlanService est sync).
+
+    Exécuté dans un thread isolé avec une session sync propre,
+    en attendant la migration async de PlanService.
+    """
+    from app.core.database import SessionLocal
+
+    with SessionLocal() as sync_db:
+        try:
+            PlanService(sync_db).maybe_persist_from_response(thread_id, user_id, agent_response)
+            sync_db.commit()
+        except Exception as exc:
+            logger.warning(
+                "[stream_message] Échec persistance plan thread %s : %s", thread_id, exc,
+            )
+            sync_db.rollback()

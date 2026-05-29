@@ -24,23 +24,29 @@ class ClaudeProvider:
         OpenAI : role=system/user/assistant
         Claude : system séparé, role=user/assistant uniquement
         Claude exige une alternance stricte user/assistant → fusionne les rôles consécutifs.
+        Supporte le contenu multimodal (list) pour les images.
         """
         system_parts: list[str] = []
         claude_messages: list[dict] = []
 
         for m in messages:
             role = m.get("role", "user")
-            text = m.get("content", "")
+            content = m.get("content", "")
             if role == "system":
-                system_parts.append(text)
+                # Les system messages sont toujours du texte
+                system_parts.append(content if isinstance(content, str) else "")
             else:
-                # Claude n'accepte que "user" et "assistant"
                 claude_role = "assistant" if role == "assistant" else "user"
-                if claude_messages and claude_messages[-1]["role"] == claude_role:
-                    # Fusionner les messages consécutifs du même rôle
-                    claude_messages[-1]["content"] += f"\n\n{text}"
+                is_multimodal = isinstance(content, list)
+
+                if is_multimodal:
+                    # Message multimodal (images) — jamais fusionné, toujours nouveau
+                    claude_messages.append({"role": claude_role, "content": content})
+                elif claude_messages and claude_messages[-1]["role"] == claude_role and isinstance(claude_messages[-1]["content"], str):
+                    # Fusionner uniquement les messages texte consécutifs du même rôle
+                    claude_messages[-1]["content"] += f"\n\n{content}"
                 else:
-                    claude_messages.append({"role": claude_role, "content": text})
+                    claude_messages.append({"role": claude_role, "content": content})
 
         system = "\n\n".join(system_parts) if system_parts else None
         return system, claude_messages

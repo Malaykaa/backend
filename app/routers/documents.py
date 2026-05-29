@@ -70,7 +70,7 @@ def export_document_pdf(
 
     pdf_bytes = DocumentService.export_pdf(doc)
 
-    filename = f"malaykaa_{doc.type.value}_{str(doc.id)[:8]}.pdf"
+    filename = f"malayka_{doc.type.value}_{str(doc.id)[:8]}.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",

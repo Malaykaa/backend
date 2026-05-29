@@ -59,6 +59,11 @@ class Settings(BaseSettings):
         "http://localhost:5173",
         "http://localhost:5174",
         "http://localhost:5175",
+        "http://localhost:5176",
+        "http://localhost:5177",
+        "http://localhost:5178",
+        "http://localhost:5179",
+        "http://localhost:5180",
         "http://localhost:3000",
         "http://localhost:8080",
         "http://127.0.0.1:8080",
@@ -66,6 +71,7 @@ class Settings(BaseSettings):
         "http://192.168.1.18:5173",
         "http://192.168.1.18:5174",
         "http://192.168.1.18:5175",
+        "http://192.168.1.18:5180",
     ]
 
     # Scraping (Apify + Perplexity)
@@ -73,10 +79,22 @@ class Settings(BaseSettings):
     perplexity_api_key: str | None = None
     scraping_enabled: bool = False
 
-    # Scheduler — APScheduler in-process. En multi-worker (uvicorn --workers N),
-    # set SCHEDULER_ENABLED=false sur N-1 workers pour qu'un seul exécute les
-    # jobs. Un advisory-lock par job sert de garde-fou si l'admin oublie.
+    # Scheduler — APScheduler in-process.
+    # En déploiement single-process (uvicorn sans --workers) : scheduler_enabled=true suffit.
+    # En multi-worker (Gunicorn + uvicorn workers) :
+    #   Option A — explicite : mettre SCHEDULER_ENABLED=false sur N-1 workers.
+    #   Option B — automatique : mettre SCHEDULER_WORKER_ONLY=true sur TOUS les workers
+    #     et SCHEDULER_WORKER=true sur LE SEUL worker désigné pour le scheduler
+    #     (via docker-compose env_file ou variable d'env du process). Le scheduler
+    #     ne démarrera que si les deux flags sont actifs simultanément.
+    # Garde-fou supplémentaire (les deux options) : advisory lock pg par job.
     scheduler_enabled: bool = True
+    # Quand true, le scheduler ne démarre que si SCHEDULER_WORKER=true est aussi défini.
+    # Permet de désigner un seul worker parmi N sans toucher SCHEDULER_ENABLED des autres.
+    scheduler_worker_only: bool = False
+    # Marqueur positionné sur le worker désigné pour exécuter le scheduler.
+    # Ignoré si scheduler_worker_only=false.
+    scheduler_worker: bool = False
     # Fréquence par défaut (heures) du job de matching automatique. Surchargée
     # par profile.match_frequency_hours quand l'utilisateur a une préférence.
     match_default_frequency_hours: int = 6
@@ -156,6 +174,12 @@ def validate_security_settings(settings: Settings | None = None) -> None:
             "CORS_ORIGINS contient des origines localhost en staging/prod — "
             "vérifier que le domaine de production est configuré "
             "(ex: CORS_ORIGINS=[\"https://app.malayka.com\"])."
+        )
+
+    if s.is_production and s.debug:
+        warnings.append(
+            "DEBUG=true en staging/prod — les tracebacks Python peuvent être exposés "
+            "dans les réponses d'erreur. Définir DEBUG=false dans .env.prod."
         )
 
     if s.is_production and not s.blacklist_fail_closed:

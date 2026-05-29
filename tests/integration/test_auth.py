@@ -6,6 +6,8 @@ import uuid
 
 import pytest
 
+from app.core.cookies import ACCESS_COOKIE
+
 
 @pytest.mark.asyncio
 async def test_send_otp_returns_ok(client):
@@ -50,7 +52,7 @@ async def test_register_via_otp_then_me(client):
     body = register.json()
     assert "accessToken" in body
     assert body["user"]["id"]
-    assert "99eange_jwt" in register.cookies
+    assert ACCESS_COOKIE in register.cookies
 
     # /auth/me avec le cookie posé
     me = await client.get("/auth/me")

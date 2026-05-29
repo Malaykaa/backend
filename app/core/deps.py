@@ -2,15 +2,18 @@
 from typing import Annotated
 
 from fastapi import Cookie, Depends, Header
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
+from .async_database import get_async_db
+from .cookies import ACCESS_COOKIE
 from .database import get_db
 from .exceptions import UnauthorizedError
 from .security import decode_token
 
-# ImportÃ© ici pour Ã©viter les imports circulaires (les modÃ¨les importent Base depuis database)
+# Importé ici pour éviter les imports circulaires (les modèles importent Base depuis database)
 def get_current_user_id(
-    access_token: Annotated[str | None, Cookie(alias="99eange_jwt")] = None,
+    access_token: Annotated[str | None, Cookie(alias=ACCESS_COOKIE)] = None,
     authorization: Annotated[str | None, Header()] = None,
 ) -> uuid.UUID:
     """Extrait l'UUID de l'utilisateur depuis le cookie OU le header Authorization Bearer."""
@@ -71,4 +74,24 @@ def get_admin_user(user: Annotated["User", Depends(get_current_user)]) -> "User"
     from fastapi import HTTPException
     if not user.role or user.role.value != "admin":
         raise HTTPException(status_code=403, detail="Acces administrateur requis.")
+    return user
+
+
+# ── Dépendances async (asyncpg) ─────────────────────────────────────────────
+
+
+async def get_async_current_user(
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+    db: Annotated[AsyncSession, Depends(get_async_db)],
+):
+    """Variante async de get_current_user — injectée dans les `async def` handlers SSE.
+
+    Utilise AsyncSession + asyncpg pour ne pas bloquer la boucle asyncio
+    lors de la lecture de l'utilisateur en DB.
+    """
+    from app.repositories.user_repo import AsyncUserRepository  # évite import circulaire
+
+    user = await AsyncUserRepository(db).get_with_profile(user_id)
+    if not user or not user.is_active:
+        raise UnauthorizedError("Utilisateur introuvable ou inactif.")
     return user

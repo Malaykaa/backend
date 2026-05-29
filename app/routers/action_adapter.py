@@ -9,6 +9,7 @@ Réutilise le pipeline Orchestrator → ExecutionEngine existant.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid as _uuid
 from typing import Annotated
@@ -17,16 +18,18 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from app.core.rate_limit import limiter, get_user_key
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.base import AgentContext
+from app.agents.types import GoalType
 from app.agents.deliverable_configs import DELIVERABLE_CONFIGS, detect_doc_type
 from app.agents.events import EventType
 from app.agents.orchestrator import Orchestrator
-from app.core.database import get_db
-from app.core.deps import extract_profile, get_current_user
+from app.core.async_database import get_async_db
+from app.core.deps import extract_profile, get_async_current_user
 from app.llm import get_llm_provider
 from app.models.user import User
+from app.services.memory_service import AsyncMemoryService
 from app.services.scraped_offer_service import ScrapedOfferService
 from app.services.sse_formatter import (
     SSE_HEADERS,
@@ -48,6 +51,7 @@ class SmartStreamRequest(BaseModel):
 
     message: str = Field(..., min_length=1, max_length=5000)
     history: list[dict] | None = None
+    threadId: str | None = None  # noqa: N815 — si fourni, surcharge history avec le contexte DB
     objectiveContext: str | None = None  # noqa: N815
     docCount: int | None = None  # noqa: N815
     imageCount: int | None = None  # noqa: N815
@@ -176,6 +180,42 @@ def _resolve_doc_type(action_type: str, message: str) -> str | None:
     return detect_doc_type(message)
 
 
+# ── Helpers ─────────────────────────────────────────────────
+
+
+async def _load_thread_history(
+    db: AsyncSession, thread_id_str: str | None,
+) -> list[dict]:
+    """Charge l'historique d'un thread depuis la DB via AsyncMemoryService.
+
+    Retourne une liste de messages prête pour AgentContext.history :
+    - Si un résumé existe, il est injecté en tête comme message système.
+    - Suivi des messages récents (role + content).
+    - Retourne [] si thread_id_str est None ou invalide.
+    """
+    if not thread_id_str:
+        return []
+    try:
+        thread_uuid = _uuid.UUID(thread_id_str)
+    except ValueError:
+        logger.warning("[action_adapter] threadId invalide : %s", thread_id_str)
+        return []
+
+    ctx = await AsyncMemoryService(db).get_context(thread_uuid)
+    history: list[dict] = []
+
+    if ctx.get("summary"):
+        history.append({
+            "role": "system",
+            "content": f"Résumé des échanges précédents avec cet utilisateur : {ctx['summary']}",
+        })
+
+    for msg in ctx.get("recent_messages", []):
+        history.append({"role": msg["role"], "content": msg["content"]})
+
+    return history
+
+
 # ── Endpoints ───────────────────────────────────────────────
 
 
@@ -185,13 +225,25 @@ async def smart_stream(
     request: Request,
     preset: str,
     body: SmartStreamRequest,
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_async_current_user)],
+    db: Annotated[AsyncSession, Depends(get_async_db)],
 ):
-    """Smart endpoint : laisse l'orchestrateur décider entre conversationnel et livrable.
+    """Smart endpoint — Triage-aware : l'orchestrateur décide entre mode conversationnel
+    et génération de livrable en fonction du message et de l'historique.
 
-    Le frontend envoie le preset brut (ex: 'business_plan_swarm', 'topic5', 'cv').
-    Le backend résout le type de document si applicable, puis route via l'Orchestrator.
+    Appelé par :
+    - Le frontend React (ActionsTab / ChatView) via le preset brut reçu en paramètre
+      d'URL (ex : 'business_plan_swarm', 'cv', 'expose').
+    - L'endpoint /swarm/{action_type}/stream est réservé à la génération directe sans
+      phase conversationnelle ; smart/stream est le point d'entrée conversationnel.
+
+    Pipeline :
+    1. Résolution du doc_type depuis le preset (mapping + détection heuristique).
+    2. Chargement de l'historique DB (threadId) ou fallback sur body.history.
+    3. Détection conversation-en-cours → goal_type=None pour laisser le Triage décider
+       (évite qu'une question de suivi génère un nouveau document).
+    4. Enrichissement optionnel avec des offres scrapées (goal_type hors document/free).
+    5. stream_route() de l'Orchestrator → SSE vers le client.
     """
     profile = extract_profile(current_user)
     doc_type = _resolve_doc_type(preset, body.message)
@@ -203,7 +255,8 @@ async def smart_stream(
     if body.objectiveContext:
         goal_context["objective_context"] = body.objectiveContext
 
-    history = body.history or []
+    # Priorité : historique DB (complet + résumé) > historique envoyé par le frontend
+    history = await _load_thread_history(db, body.threadId) or (body.history or [])
 
     # ── Intent-aware goal_type resolution ──
     # Si l'historique contient déjà des messages assistant (conversation en cours),
@@ -217,17 +270,25 @@ async def smart_stream(
     goal_type: str | None = None
     if doc_type and not has_prior_conversation:
         # Premier message → l'utilisateur veut clairement un document
-        goal_type = "document"
+        goal_type = GoalType.DOCUMENT
     elif not doc_type and preset in _PRESET_TO_GOAL_TYPE:
         goal_type = _PRESET_TO_GOAL_TYPE[preset]
     # Sinon goal_type = None → le Triage LLM décidera
 
-    # Enrichir avec des offres scrapées pertinentes (si disponibles)
-    if goal_type and goal_type not in ("document", "free"):
+    # Enrichir avec des offres scrapées pertinentes (si disponibles).
+    # ScrapedOfferService est sync/pgvector → thread isolé avec session sync propre.
+    if goal_type and goal_type not in (GoalType.DOCUMENT, GoalType.FREE):
         try:
-            offers = ScrapedOfferService(db).search_for_agent(
-                intent=goal_type, profile=profile, message=body.message,
-            )
+            _gt, _profile, _msg = goal_type, profile, body.message
+
+            def _sync_offers() -> list[dict]:
+                from app.core.database import SessionLocal
+                with SessionLocal() as sync_db:
+                    return ScrapedOfferService(sync_db).search_for_agent(
+                        intent=_gt, profile=_profile, message=_msg,
+                    )
+
+            offers = await asyncio.to_thread(_sync_offers)
             if offers:
                 goal_context["relevant_offers"] = offers
         except Exception:
@@ -261,8 +322,8 @@ async def swarm_stream(
     request: Request,
     action_type: str,
     body: SwarmStreamRequest,
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_async_current_user)],
+    db: Annotated[AsyncSession, Depends(get_async_db)],
 ):
     """Legacy swarm endpoint : génération de document directe (pas de phase conversationnelle).
 
@@ -276,12 +337,15 @@ async def swarm_stream(
     if body.objectiveContext:
         goal_context["objective_context"] = body.objectiveContext
 
+    # Charger l'historique du thread pour que l'agent connaisse le contexte de la conversation
+    history = await _load_thread_history(db, body.threadId)
+
     ctx = AgentContext(
         user_id=current_user.id,
         message=message,
-        history=[],
+        history=history,
         profile=profile,
-        goal_type="document",
+        goal_type=GoalType.DOCUMENT,
         goal_context=goal_context,
     )
 
@@ -312,30 +376,43 @@ async def swarm_stream(
         # Persister le document dans le thread après la fin du streaming.
         # Utilise le même format que _save_assistant() (payload.deliverables)
         # pour que _format_message() en chat.py le rende comme livrable.
+        # Exécuté dans un thread sync propre (ChatRepository est sync).
         if thread_uuid and final_content:
+            _content_snapshot = final_content
+            _uuid_snapshot = thread_uuid
             try:
-                from app.repositories.chat_repo import ChatRepository
-                from app.models.chat import MessageRole
-                repo = ChatRepository(db)
-                repo.add_message(
-                    thread_id=thread_uuid,
-                    role=MessageRole.assistant,
-                    content=final_content[:200],  # résumé court dans content
-                    payload={
-                        "deliverables": [final_content],
-                        "agent_id": "document",
-                    },
-                )
-                db.commit()
-                logger.info(
-                    "[swarm_stream] Document persisté dans thread %s (%d chars)",
-                    thread_uuid, len(final_content),
+                await asyncio.to_thread(
+                    _sync_persist_swarm_document,
+                    _uuid_snapshot, _content_snapshot,
                 )
             except Exception as save_exc:
                 logger.warning(
                     "[swarm_stream] Échec persistance document thread %s : %s",
-                    thread_uuid, save_exc,
+                    _uuid_snapshot, save_exc,
                 )
-                db.rollback()
 
     return StreamingResponse(stream(), media_type="text/event-stream", headers=SSE_HEADERS)
+
+
+# ── Helper sync exécuté dans un thread (ChatRepository est sync) ─────────────
+
+
+def _sync_persist_swarm_document(thread_uuid: _uuid.UUID, content: str) -> None:
+    """Persiste le document généré par swarm_stream dans la DB (session sync isolée)."""
+    from app.core.database import SessionLocal
+    from app.models.chat import MessageRole
+    from app.repositories.chat_repo import ChatRepository
+
+    with SessionLocal() as db:
+        repo = ChatRepository(db)
+        repo.add_message(
+            thread_id=thread_uuid,
+            role=MessageRole.assistant,
+            content=content[:200],
+            payload={"deliverables": [content], "agent_id": "document"},
+        )
+        db.commit()
+        logger.info(
+            "[swarm_stream] Document persisté dans thread %s (%d chars)",
+            thread_uuid, len(content),
+        )

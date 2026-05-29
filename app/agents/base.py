@@ -325,6 +325,8 @@ class AgentContext(BaseModel):
     goal_type: str | None = None
     goal_type_source: Literal["goal", "inferred"] | None = None
     goal_context: dict = {}
+    # Images jointes au message — format Claude natif : {"media_type": "image/jpeg", "data": "<base64>"}
+    image_data: list[dict] = []
 
 
 # ── Protocol que chaque agent doit implémenter ───────────
@@ -419,10 +421,25 @@ class SpecializedAgent:
         # de blocs "Sources" avec des liens hors-sujet (programmes d'échange, etc.)
         # dans toutes les réponses, y compris les messages d'accueil.
 
-        for h in ctx.history[-10:]:
+        for h in ctx.history[-20:]:
             messages.append({"role": h["role"], "content": h["content"]})
 
-        messages.append({"role": "user", "content": ctx.message})
+        # Message utilisateur — multimodal si des images sont jointes
+        if ctx.image_data:
+            content_blocks: list[dict] = []
+            for img in ctx.image_data:
+                content_blocks.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": img["media_type"],
+                        "data": img["data"],
+                    },
+                })
+            content_blocks.append({"type": "text", "text": ctx.message})
+            messages.append({"role": "user", "content": content_blocks})
+        else:
+            messages.append({"role": "user", "content": ctx.message})
         return messages
 
     def _parse(self, raw: str) -> AgentResponse:

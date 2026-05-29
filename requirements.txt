@@ -15,6 +15,9 @@ pydantic-settings>=2.5.0
 SQLAlchemy>=2.0.36
 alembic>=1.14.0
 psycopg2-binary>=2.9.10
+# asyncpg — driver async pour SQLAlchemy AsyncSession (routers SSE critiques)
+# psycopg2-binary reste pour Alembic et APScheduler (sync)
+asyncpg>=0.30.0,<1
 # pgvector : type Vector côté ORM + binding psycopg2 pour la recherche sémantique
 pgvector>=0.3.6,<0.4
 python-jose[cryptography]>=3.3.0
@@ -35,3 +38,5 @@ twilio>=9.4.0
 slowapi>=0.1.9
 # PDF export — utilisé par DocumentService.export_pdf() via /documents/{id}/export
 reportlab>=4.2.0,<5
+# PDF text extraction — utilisé pour lire les PDFs uploadés dans le chat
+pypdf>=4.0.0,<5
