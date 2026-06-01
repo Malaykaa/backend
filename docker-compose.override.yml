@@ -1,0 +1,10 @@
+# Overrides locaux — appliqués automatiquement en dev (docker compose up)
+# Ne jamais commiter de secrets dans ce fichier.
+services:
+  backend:
+    build: .
+    image: malaykaa-backend:dev
+    environment:
+      RELOAD: "true"
+    volumes:
+      - .:/app
