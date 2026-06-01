@@ -11,7 +11,7 @@ set -euo pipefail
 GITHUB_OWNER="${1:?Usage: $0 <GITHUB_OWNER> <GITHUB_TOKEN>}"
 GITHUB_TOKEN="${2:?Usage: $0 <GITHUB_OWNER> <GITHUB_TOKEN>}"
 PROJECT_PATH="/opt/malaykaa/backend"
-BACKEND_IMAGE="ghcr.io/${GITHUB_OWNER}/malaykaa-backend:latest"
+BACKEND_IMAGE="ghcr.io/${GITHUB_OWNER}/backend:latest"
 
 log() { echo -e "\n\033[1;32m▶ $*\033[0m"; }
 
@@ -36,7 +36,7 @@ docker network create malaykaa_net 2>/dev/null || echo "Réseau déjà existant.
 # ── 4. Démarrage DB et Redis ──────────────────────────────────────────────
 log "Démarrage de la base de données et Redis..."
 cd "$PROJECT_PATH"
-BACKEND_IMAGE="ghcr.io/${GITHUB_OWNER}/malaykaa-backend" IMAGE_TAG=latest \
+BACKEND_IMAGE="ghcr.io/${GITHUB_OWNER}/backend" IMAGE_TAG=latest \
   docker compose up -d db redis
 
 log "Attente que la base de données soit prête..."
@@ -44,12 +44,12 @@ sleep 10
 
 # ── 5. Migrations Alembic ─────────────────────────────────────────────────
 log "Application des migrations..."
-BACKEND_IMAGE="ghcr.io/${GITHUB_OWNER}/malaykaa-backend" IMAGE_TAG=latest \
+BACKEND_IMAGE="ghcr.io/${GITHUB_OWNER}/backend" IMAGE_TAG=latest \
   docker compose run --rm backend alembic upgrade head
 
 # ── 6. Démarrage backend ──────────────────────────────────────────────────
 log "Démarrage du backend..."
-BACKEND_IMAGE="ghcr.io/${GITHUB_OWNER}/malaykaa-backend" IMAGE_TAG=latest \
+BACKEND_IMAGE="ghcr.io/${GITHUB_OWNER}/backend" IMAGE_TAG=latest \
   docker compose up -d backend
 
 # ── 7. Vérification ───────────────────────────────────────────────────────
