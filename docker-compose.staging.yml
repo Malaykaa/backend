@@ -1,0 +1,13 @@
+services:
+
+  backend-staging:
+    image: ${BACKEND_IMAGE:-malaykaa-backend}:${IMAGE_TAG:-develop}
+    env_file: .env.staging
+    networks:
+      - malaykaa_net
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
