@@ -118,16 +118,34 @@ def delete_user(user_id: UUID, admin: Annotated[User, Depends(get_admin_user)], 
     db.delete(u); db.commit()
 
 @router.get("/offers", response_model=AdminPaginated[AdminOfferItem])
-def list_offers(admin: Annotated[User, Depends(get_admin_user)], db: Annotated[Session, Depends(get_db)], page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=100), offer_type: str | None = None, source: str | None = None, active: bool | None = None, q: str | None = None):
+def list_offers(admin: Annotated[User, Depends(get_admin_user)], db: Annotated[Session, Depends(get_db)], page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=100), offer_type: str | None = None, source: str | None = None, source_prefix: str | None = None, active: bool | None = None, q: str | None = None):
     base = db.query(ScrapedOffer)
     if offer_type: base = base.filter(ScrapedOffer.offer_type == offer_type)
     if source: base = base.filter(ScrapedOffer.source == source)
+    if source_prefix: base = base.filter(ScrapedOffer.source.ilike(f"{source_prefix}%"))
     if active is not None: base = base.filter(ScrapedOffer.is_active.is_(active))
     if q: base = base.filter(or_(ScrapedOffer.title.ilike(f"%{q}%"), ScrapedOffer.company.ilike(f"%{q}%")))
     total = base.with_entities(func.count(ScrapedOffer.id)).scalar() or 0
     rows = base.order_by(desc(ScrapedOffer.scraped_at)).offset((page-1)*size).limit(size).all()
     items = [AdminOfferItem(id=str(o.id), source=o.source, offer_type=o.offer_type.value if o.offer_type else None, title=o.title, company=o.company, location=o.location, url=o.url, quality_score=o.quality_score, is_active=o.is_active, has_embedding=o.embedding is not None, scraped_at=o.scraped_at, posted_at=o.posted_at, expires_at=o.expires_at) for o in rows]
     return AdminPaginated(items=items, **_pag(total, page, size))
+
+@router.get("/offers/{offer_id}", response_model=AdminOfferDetail)
+def get_offer(offer_id: UUID, admin: Annotated[User, Depends(get_admin_user)], db: Annotated[Session, Depends(get_db)]):
+    """Détail complet d'une offre — inclut la description pour la curation manuelle."""
+    o = db.get(ScrapedOffer, offer_id)
+    if not o: raise HTTPException(404, "Offre introuvable.")
+    return AdminOfferDetail(
+        id=str(o.id), source=o.source,
+        offer_type=o.offer_type.value if o.offer_type else None,
+        title=o.title, company=o.company, location=o.location,
+        url=o.url, quality_score=o.quality_score, is_active=o.is_active,
+        has_embedding=o.embedding is not None,
+        scraped_at=o.scraped_at, posted_at=o.posted_at, expires_at=o.expires_at,
+        description=o.description, external_id=o.external_id or str(o.id),
+        normalized_title=o.normalized_title if hasattr(o, "normalized_title") else None,
+        salary=o.salary,
+    )
 
 @router.patch("/offers/{offer_id}", response_model=AdminOfferItem)
 def update_offer(offer_id: UUID, payload: AdminOfferUpdate, admin: Annotated[User, Depends(get_admin_user)], db: Annotated[Session, Depends(get_db)]):

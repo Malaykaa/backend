@@ -82,9 +82,14 @@ class ChatService:
         profile: dict | None,
         user_payload: dict | None = None,
         attachment_ids: list[str] | None = None,
+        display_content: str | None = None,
     ) -> tuple[ChatThread, AgentContext]:
         """Étapes communes à handle_message/stream_message :
         vérif ownership, mémoire, save user msg, construction de l'AgentContext.
+
+        display_content : si fourni, c'est ce texte court qui est stocké en DB
+            (bulle utilisateur visible). `content` reste le contexte complet
+            envoyé au LLM. Utilisé par les étapes du plan d'action.
         """
         thread = self.repo.get_thread_with_messages(thread_id)
         if not thread or thread.user_id != user_id:
@@ -95,9 +100,11 @@ class ChatService:
         history = memory_ctx["recent_messages"]
         summary = memory_ctx["summary"]
 
+        # En DB : on stocke display_content (si fourni) pour la bulle utilisateur
+        stored_content = display_content if display_content else content
         user_msg = self.repo.add_message(
             thread_id=thread_id, role=MessageRole.user,
-            content=content, payload=user_payload,
+            content=stored_content, payload=user_payload,
         )
 
         # Lier les pièces jointes pending et enrichir le contenu avec le texte extrait / images
@@ -208,10 +215,14 @@ class ChatService:
         profile: dict | None = None,
         user_payload: dict | None = None,
         attachment_ids: list[str] | None = None,
+        display_content: str | None = None,
     ) -> tuple[ChatMessage, AgentResponse]:
         """Flux non-streaming : save user msg → orchestrate → save assistant msg → return."""
         bind_chat_context(thread_id=str(thread_id), user_id=str(user_id))
-        thread, ctx = self._prepare_context(thread_id, user_id, content, profile, user_payload, attachment_ids)
+        thread, ctx = self._prepare_context(
+            thread_id, user_id, content, profile, user_payload, attachment_ids,
+            display_content=display_content,
+        )
 
         llm = get_llm_provider()
         orchestrator = Orchestrator(llm)
@@ -410,8 +421,13 @@ class AsyncChatService:
         profile: dict | None,
         user_payload: dict | None = None,
         attachment_ids: list[str] | None = None,
+        display_content: str | None = None,
     ) -> tuple[ChatThread, AgentContext]:
-        """Charge le thread, injecte la mémoire, persiste le message user."""
+        """Charge le thread, injecte la mémoire, persiste le message user.
+
+        display_content : si fourni, stocké en DB à la place de content
+            (bulle utilisateur). content reste le contexte complet pour le LLM.
+        """
         thread = await self.repo.get_thread_with_messages(thread_id)
         if not thread or thread.user_id != user_id:
             raise NotFoundError("Thread")
@@ -420,9 +436,10 @@ class AsyncChatService:
         history = memory_ctx["recent_messages"]
         summary = memory_ctx["summary"]
 
+        stored_content = display_content if display_content else content
         user_msg = await self.repo.add_message(
             thread_id=thread_id, role=MessageRole.user,
-            content=content, payload=user_payload,
+            content=stored_content, payload=user_payload,
         )
 
         # Pièces jointes — exécutées dans un thread (DocumentService est sync)
@@ -521,10 +538,12 @@ class AsyncChatService:
         profile: dict | None = None,
         user_payload: dict | None = None,
         attachment_ids: list[str] | None = None,
+        display_content: str | None = None,
     ) -> tuple[ChatMessage, AgentResponse]:
         bind_chat_context(thread_id=str(thread_id), user_id=str(user_id))
         thread, ctx = await self._prepare_context(
             thread_id, user_id, content, profile, user_payload, attachment_ids,
+            display_content=display_content,
         )
 
         llm = get_llm_provider()
@@ -549,10 +568,12 @@ class AsyncChatService:
         content: str,
         profile: dict | None = None,
         attachment_ids: list[str] | None = None,
+        display_content: str | None = None,
     ) -> AsyncIterator[ProgressEvent]:
         bind_chat_context(thread_id=str(thread_id), user_id=str(user_id))
         thread, ctx = await self._prepare_context(
             thread_id, user_id, content, profile, attachment_ids=attachment_ids,
+            display_content=display_content,
         )
 
         llm = get_llm_provider()
