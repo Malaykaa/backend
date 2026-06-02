@@ -66,6 +66,7 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
             set -e
+            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
             cd ${{ secrets.DEPLOY_PATH }}
             docker pull ${{ env.IMAGE }}:${{ github.sha }}
             BACKEND_IMAGE=${{ env.IMAGE }} IMAGE_TAG=${{ github.sha }} \
@@ -93,6 +94,7 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
             set -e
+            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
             cd ${{ secrets.DEPLOY_PATH }}
             docker pull ${{ env.IMAGE }}:latest
             BACKEND_IMAGE=${{ env.IMAGE }} IMAGE_TAG=latest \
