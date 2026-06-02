@@ -64,7 +64,9 @@ jobs:
             cd ${{ secrets.DEPLOY_PATH }}
             docker pull ${{ env.IMAGE }}:${{ github.sha }}
             BACKEND_IMAGE=${{ env.IMAGE }} IMAGE_TAG=${{ github.sha }} \
-              docker compose up -d --no-build backend
+              docker compose -f docker-compose.yml -f docker-compose.staging.yml \
+              up -d --no-build backend-staging
+            docker exec backend-backend-1 alembic upgrade head || true
             docker image prune -f
 
   deploy-production:
