@@ -205,3 +205,36 @@ def logout(
     response.delete_cookie(REFRESH_COOKIE, path="/")
     return {"detail": "Déconnecté."}
 
+
+@router.delete("/me", status_code=204)
+def delete_account(
+    response: Response,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    refresh_token: Annotated[str | None, Cookie(alias=REFRESH_COOKIE)] = None,
+):
+    """Supprime définitivement le compte et toutes les données associées.
+
+    La suppression cascade (goals, threads, messages, documents, intentions,
+    notifications, feedbacks) est assurée par les relations SQLAlchemy avec
+    cascade='all, delete-orphan' sur le modèle User.
+    Les cookies de session sont effacés immédiatement.
+    """
+    # Invalider le refresh token si présent
+    if refresh_token:
+        from app.core.security import decode_token
+        from app.services.token_blacklist import revoke
+        try:
+            payload = decode_token(refresh_token)
+            revoke(refresh_token, exp=int(payload.get("exp", 0)))
+        except Exception:
+            pass
+
+    # Supprimer le compte (cascade sur toutes les données)
+    db.delete(current_user)
+    db.commit()
+
+    # Effacer les cookies de session
+    response.delete_cookie(ACCESS_COOKIE, path="/")
+    response.delete_cookie(REFRESH_COOKIE, path="/")
+
