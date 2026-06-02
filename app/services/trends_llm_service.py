@@ -87,7 +87,13 @@ Règles absolues :
 - Si l'utilisateur cherche une bourse : parle de bourses, pas d'emplois
 - Si l'utilisateur est développeur : cite des compétences tech, pas du marketing
 - 2 à 4 phrases par champ maximum — concis et actionnable
-- Langue : français"""
+- Langue : français
+- CRITIQUE — cohérence des chiffres : tu peux mentionner les chiffres BRUTS des données marché
+  (ex: "145 offres d'emploi publiées cette semaine") car ils viennent directement du JSON.
+  NE génère JAMAIS de chiffres filtrés inventés dans les champs action/ce_qui_se_passe
+  (ex: NE DIS PAS "voir les 5 offres en remote" ou "80 offres en communication" car ces filtres
+  ne correspondent à aucun résultat réel vérifiable). Les boutons de navigation vers les offres
+  sont générés automatiquement par l'interface — ton rôle est uniquement l'interprétation qualitative."""
 
 
 def _extract_json(text: str) -> dict:

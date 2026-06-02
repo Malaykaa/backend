@@ -109,6 +109,38 @@ async def run_apify_light(
     return {"status": "started", "message": "Run Apify léger lancé en arrière-plan."}
 
 
+@router.post("/run-apify-heavy")
+async def run_apify_heavy(
+    background_tasks: BackgroundTasks,
+    current_user: Annotated[User, Depends(get_current_user)],
+):
+    """Déclenche un run Apify heavy manuellement — inclut le web crawler sur les sites africains."""
+    _require_admin(current_user)
+    settings = get_settings()
+    if not settings.apify_api_token:
+        raise HTTPException(status_code=400, detail="APIFY_API_TOKEN not configured")
+    background_tasks.add_task(_bg_apify_heavy, settings.apify_api_token)
+    return {"status": "started", "message": "Run Apify heavy (web crawler) lancé en arrière-plan."}
+
+
+async def _bg_apify_heavy(api_token: str) -> None:
+    """Run Apify heavy en arrière-plan — web crawler + sites africains."""
+    from app.core.database import SessionLocal
+    from app.services.scraping.apify_service import ApifyService
+    db = SessionLocal()
+    try:
+        svc = ApifyService(db, api_token)
+        results = await svc.run_heavy()
+        db.commit()
+        total = sum(r.get("stored", 0) for r in results)
+        logger.info("Manual Apify heavy run done: %d sources, %d stored", len(results), total)
+    except Exception:
+        db.rollback()
+        logger.error("Manual Apify heavy run failed", exc_info=True)
+    finally:
+        db.close()
+
+
 # ── Sources dynamiques ────────────────────────────────────────────────────────
 
 @router.get("/sources", response_model=list[AdminScrapingSourceItem])

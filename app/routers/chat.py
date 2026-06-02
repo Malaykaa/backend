@@ -57,9 +57,17 @@ class FrontendThreadCreate(BaseModel):
 
 
 class FrontendMessageCreate(BaseModel):
-    """Envoi de message au format frontend."""
+    """Envoi de message au format frontend.
 
-    content: str = Field(..., min_length=1, max_length=5000)
+    display_content : texte affiché dans la bulle utilisateur (optionnel).
+        Si fourni, c'est lui qui est stocké en DB et montré à l'utilisateur.
+        `content` reste le contexte complet envoyé au LLM (invisible).
+        Utilisé par ex. pour les étapes du plan d'action : afficher "Étape : X"
+        mais envoyer le contexte détaillé au modèle.
+    """
+
+    content: str = Field(..., min_length=1, max_length=8000)
+    display_content: str | None = Field(default=None, max_length=500)
     useAi: bool = True  # noqa: N815
     history: list[dict] | None = None
     metadata: dict | None = None
@@ -543,6 +551,7 @@ async def stream_message(
             content=body.content,
             profile=profile,
             attachment_ids=body.attachment_ids,
+            display_content=body.display_content,
         ):
             # PlanService est sync — exécuté dans un thread isolé après l'event done
             if event.type == EventType.done and event.agent_response:

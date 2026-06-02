@@ -208,12 +208,31 @@ async def _run_match_job() -> None:
         lock_db.close()  # libère le pg_advisory_lock
 
 
+async def _run_tendances_delta() -> None:
+    """Détecte les changements significatifs de tendances et notifie les users."""
+    import asyncio  # noqa: PLC0415
+    db = SessionLocal()
+    try:
+        from app.services.tendances_delta_runner import TendancesDeltaRunner
+        runner = TendancesDeltaRunner(db)
+        # run_once est synchrone — on l'isole dans un thread pour ne pas bloquer la loop
+        stats = await asyncio.to_thread(runner.run_once)
+        logger.info("Tendances delta check: %s", stats)
+    except Exception:
+        db.rollback()
+        logger.error("Tendances delta job failed", exc_info=True)
+    finally:
+        db.close()
+
+
 async def _run_daily_scraping() -> None:
     """Run combiné Apify léger + tous les Perplexity — exécuté 3x/jour lun-sam."""
     await _run_apify_light()
     await _run_perplexity_daily()
     await _run_perplexity_search_africa()
     await _run_perplexity_search_global()
+    # Après chaque run de scraping, vérifier les deltas de tendances
+    await _run_tendances_delta()
 
 
 def start_scheduler() -> None:

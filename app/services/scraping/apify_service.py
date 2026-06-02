@@ -159,24 +159,26 @@ WEB_URLS = {
         "https://www.youthop.com/",
         "https://opportunitiesforyouth.org/",
         "https://www.afterschoolafrica.com/",
-        "https://servicepublic.gouv.ci/",         # CI — services publics & concours
+        "https://servicepublic.gouv.ci/",          # CI — services publics & concours
         "https://projets.agenceemploijeunes.ci/",  # CI — agence emploi jeunes
     ],
     "job_boards": [
-        "https://myjobmag.com/",
-        "https://www.jobberman.com/",
-        "https://www.brightermonday.com/",
-        "https://www.careers24.com/",
-        "https://www.rekrute.com/",
+        "https://myjobmag.com/jobs",               # URL correcte (pas /jobs/africa)
+        "https://www.jobberman.com/jobs",
+        "https://www.brightermonday.com/jobs",
+        "https://www.careers24.com/jobs/",
+        "https://www.rekrute.com/offres-emploi.html",
         "https://wiijob.com/offres-emploi/",           # CI — wiijob
         "https://www.jobivoire.ci/job",                # CI — jobivoire
         "https://www.emploi.ci/recherche-jobs-cote-ivoire", # CI — emploi.ci
-        "https://www.novojob.com/cote-d-ivoire/offres-d-emploi", # CI — novojob
+        # novojob.com retiré — domaine mort (code 000)
         "https://www.goafricaonline.com/ci/emploi/",  # CI — GoAfrica
     ],
     "grants": [
-        "https://www.afdb.org/en/opportunities",
+        # afdb.org retiré — bloque les crawlers (403)
         "https://yali.state.gov/",
+        "https://www.opportunitiesforafricans.com/",
+        "https://africagrants.com/",
     ],
     "scholarships": [
         "https://scholarshipdb.net/scholarships-in/Africa",
@@ -364,20 +366,37 @@ class ApifyService:
         source: str,
         normalizer: Normalizer,
         max_items: int | None = None,
+        memory_mbytes: int = 1024,
     ) -> dict[str, int]:
-        """Lance un actor Apify, normalise et stocke les résultats."""
+        """Lance un actor Apify, normalise et stocke les résultats.
+
+        L'appel Apify est synchrone (apify_client ne supporte pas async) — on
+        l'exécute dans un thread séparé via asyncio.to_thread() pour ne pas
+        bloquer la boucle FastAPI pendant les 30-300s du run.
+        memory_mbytes : RAM allouée au run (défaut 1024 Mo = suffisant pour la
+        plupart des actors, sauf website-content-crawler qui nécessite 2048+).
+        """
+        import asyncio  # noqa: PLC0415
         stats = {"scraped": 0, "stored": 0}
         try:
             client = self._get_client()
-            run = client.actor(actor_id).call(run_input=input_data, timeout_secs=300)
-            dataset_id = run.get("defaultDatasetId")
-            if not dataset_id:
-                return stats
 
-            result = client.dataset(dataset_id).list_items()
-            # apify_client v2+ retourne un objet ListPage avec .items (pas un dict)
-            items = result.items if hasattr(result, "items") else result.get("items", [])
-            stats["scraped"] = len(items)
+            # ── Appel synchrone isolé dans un thread ─────────────────────────
+            def _run_sync() -> tuple[list, int]:
+                run = client.actor(actor_id).call(
+                    run_input=input_data,
+                    timeout_secs=300,
+                    memory_mbytes=memory_mbytes,  # option run, pas input actor
+                )
+                dataset_id = run.get("defaultDatasetId") if run else None
+                if not dataset_id:
+                    return [], 0
+                result = client.dataset(dataset_id).list_items(limit=max_items or 500)
+                items = result.items if hasattr(result, "items") else result.get("items", [])
+                return items, len(items)
+
+            items, n_scraped = await asyncio.to_thread(_run_sync)
+            stats["scraped"] = n_scraped
             now = datetime.now(timezone.utc)
 
             for item in items:
@@ -539,16 +558,17 @@ class ApifyService:
             r = await self.run_actor(
                 actor_id=ACTOR_WEB,
                 input_data={
-                    "startUrls":    [{"url": u} for u in urls],
-                    "maxCrawlPages": 10,
-                    "maxCrawlDepth": 2,
-                    "saveMarkdown": True,
-                    "saveHtml":     False,
-                    "blockMedia":   True,
+                    "startUrls":     [{"url": u} for u in urls],
+                    "maxCrawlPages": 5,
+                    "maxCrawlDepth": 1,
+                    "saveMarkdown":  True,
+                    "saveHtml":      False,
+                    "blockMedia":    True,
                 },
                 offer_type=offer_type_map.get(category, "opportunity"),
                 source=f"web_{category}",
                 normalizer=normalize_web_content,
+                memory_mbytes=2048,  # website-content-crawler nécessite plus de RAM
             )
             results.append({"source": f"web_{category}", "offer_type": offer_type_map.get(category, "opportunity"), **r})
 
@@ -561,8 +581,8 @@ class ApifyService:
                 actor_id=ACTOR_WEB,
                 input_data={
                     "startUrls":     [{"url": u} for u in urls],
-                    "maxCrawlPages": 8,
-                    "maxCrawlDepth": 2,
+                    "maxCrawlPages": 5,
+                    "maxCrawlDepth": 1,
                     "saveMarkdown":  True,
                     "saveHtml":      False,
                     "blockMedia":    True,
@@ -570,6 +590,7 @@ class ApifyService:
                 offer_type=offer_type_map.get(category, "opportunity"),
                 source=f"web_dynamic_{category}",
                 normalizer=normalize_web_content,
+                memory_mbytes=2048,
             )
             results.append({"source": f"web_dynamic_{category}", "offer_type": offer_type_map.get(category, "opportunity"), **r})
 
