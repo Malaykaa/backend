@@ -15,7 +15,7 @@ from app.core.rate_limit import limiter
 from app.routers import auth, documents, files, goals, opportunities, plans, tracking, users
 from app.routers import action_adapter, admin_scraping, admin_router, chat, recommendations_router, trends, notifications
 
-settings = get_settings()
+settings = get_settings() 
 
 # Configurer structlog dès que possible — avant toute instanciation de logger.
 configure_logging(environment=settings.environment)
