@@ -50,7 +50,17 @@ class AdminOfferDetail(AdminOfferItem):
     description: str | None; external_id: str; normalized_title: str | None; salary: str | None
 
 class AdminOfferUpdate(BaseModel):
-    is_active: bool | None = None; quality_score: float | None = None
+    is_active: bool | None = None
+    quality_score: float | None = None
+    title: str | None = None
+    offer_type: str | None = None
+    description: str | None = None
+    url: str | None = None
+    company: str | None = None
+    location: str | None = None
+    salary: str | None = None
+    posted_at: datetime | None = None
+    expires_at: datetime | None = None
 
 class AdminGoalItem(BaseModel):
     id: str; user_id: str; user_email: str | None; type: str; status: str
