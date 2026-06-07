@@ -1,8 +1,19 @@
 """IntentExtractorService — extrait et stocke l'intention utilisateur par LLM.
 
-Déclenchement automatique après EXTRACTION_THRESHOLD messages actifs dans
-un thread lié à un objectif (goal). Re-extraction tous les RE_EXTRACTION_INTERVAL
-messages supplémentaires pour affiner l'intention au fil de la conversation.
+Logique d'extraction progressive en 3 niveaux :
+
+  Niveau 1 — Précoce (≥ 2 messages) :
+    Si l'utilisateur exprime une intention explicite dès les premiers messages
+    ("je cherche", "je veux", "mon objectif est…"), l'extraction est déclenchée
+    immédiatement sans attendre d'accumuler des échanges.
+
+  Niveau 2 — Standard (≥ 4 messages) :
+    Après 2 échanges complets, l'extraction se déclenche systématiquement même
+    sans signal explicite — suffisamment de contexte pour une extraction fiable.
+
+  Niveau 3 — Évolutif (re-extraction tous les 4 messages) :
+    L'intention est raffinée régulièrement au fil de la conversation pour
+    intégrer les précisions apportées par l'utilisateur.
 
 Résultat stocké dans user_intents et utilisé pour le matching d'offres.
 """
@@ -11,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 
 from sqlalchemy import select
@@ -25,12 +37,58 @@ from app.repositories.intent_repo import IntentRepository
 logger = logging.getLogger(__name__)
 
 # ── Seuils ────────────────────────────────────────────────────────────────────
-# Déclenche la première extraction après ce nombre de messages actifs (user + assistant)
-# 8 messages = ~4 échanges de part et d'autre
-EXTRACTION_THRESHOLD = 8
 
-# Re-extrait tous les N messages supplémentaires après la première extraction
-RE_EXTRACTION_INTERVAL = 6
+# Niveau 1 : extraction précoce si signal explicite détecté
+EARLY_EXTRACTION_THRESHOLD = 2    # min messages requis (1 user + 1 assistant)
+
+# Niveau 2 : extraction systématique après ce nombre de messages
+STANDARD_EXTRACTION_THRESHOLD = 4 # ~2 échanges complets
+
+# Niveau 3 : re-extraction régulière après la première extraction
+RE_EXTRACTION_INTERVAL = 4
+
+# ── Détection de signal d'intention explicite ─────────────────────────────────
+# Regex compilé une seule fois. Détecte les déclarations directes d'objectif
+# dans les premiers messages utilisateur, sans appel LLM.
+_INTENT_SIGNAL_RE = re.compile(
+    r"""
+    \b(?:
+        # Français — déclarations directes
+        je\s+cherche[sz]?         |
+        je\s+recherche[sz]?       |
+        je\s+veux                 |
+        je\s+souhaite[sz]?        |
+        je\s+voudrais             |
+        j['']aimerais             |
+        j['']ai\s+besoin          |
+        j['']espère               |
+        mon\s+objectif            |
+        mon\s+but\s+est           |
+        je\s+suis\s+\w+\s+la\s+recherche |
+        postuler\s+(?:à|pour|sur) |
+        je\s+vise                 |
+        trouver\s+un[e]?\s+\w+    |
+        décrocher\s+un[e]?        |
+        obtenir\s+un[e]?          |
+        m['']inscrire             |
+        me\s+reconvertir          |
+        candidater\s+(?:à|pour)   |
+        préparer?\s+(?:le|un|mon|la|une) |
+        # English — explicit declarations
+        i['']m\s+looking\s+for    |
+        i\s+want\s+to             |
+        i\s+need\s+(?:a|to|an)    |
+        i\s+would\s+like          |
+        i['']d\s+like\s+to        |
+        i['']m\s+seeking          |
+        my\s+goal\s+is            |
+        i\s+hope\s+to             |
+        apply\s+for               |
+        looking\s+for\s+a
+    )\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
 
 # ── Types normalisés attendus du LLM ─────────────────────────────────────────
 VALID_INTENT_TYPES = frozenset({
@@ -77,26 +135,60 @@ class IntentExtractorService:
     # ── API publique ──────────────────────────────────────────────────────────
 
     def should_extract(self, thread_id: uuid.UUID) -> bool:
-        """Retourne True si le seuil d'extraction est atteint pour ce thread."""
-        thread = self._chat_repo.get_by_id(thread_id)
-        if not thread:
-            return False
+        """Retourne True si les conditions d'extraction sont réunies.
 
-        # N'extraire que pour les threads liés à un objectif (goal)
-        if not thread.goal_id:
+        Applique la logique progressive en 3 niveaux :
+          - Niveau 1 : ≥ 2 messages + signal explicite détecté → extraction précoce
+          - Niveau 2 : ≥ 4 messages → extraction systématique
+          - Niveau 3 : re-extraction tous les RE_EXTRACTION_INTERVAL messages
+        """
+        thread = self._chat_repo.get_by_id(thread_id)
+        if not thread or not thread.goal_id:
             return False
 
         count = thread.message_count
-        if count < EXTRACTION_THRESHOLD:
-            return False
 
         existing = self._intent_repo.get_by_thread(thread_id)
-        if existing is None:
-            return True  # Première extraction
+        if existing is not None:
+            # Re-extraction : suffisamment de nouveaux messages depuis la dernière ?
+            return (count - existing.message_count_at_extraction) >= RE_EXTRACTION_INTERVAL
 
-        # Re-extraction si assez de nouveaux messages depuis la dernière
-        messages_since = count - existing.message_count_at_extraction
-        return messages_since >= RE_EXTRACTION_INTERVAL
+        # Première extraction — logique progressive
+        if count < EARLY_EXTRACTION_THRESHOLD:
+            return False  # Trop tôt dans tous les cas
+
+        if count < STANDARD_EXTRACTION_THRESHOLD:
+            # Niveau 1 : extraire seulement si signal explicite présent
+            return self._has_early_intent_signal(thread_id)
+
+        # Niveau 2 : suffisamment d'échanges → extraction systématique
+        return True
+
+    def _has_early_intent_signal(self, thread_id: uuid.UUID) -> bool:
+        """Détecte si les premiers messages utilisateur contiennent une
+        déclaration d'intention explicite (sans appel LLM).
+
+        Examine les 3 premiers messages visibles de l'utilisateur.
+        Les messages internes (is_internal) sont ignorés car ils sont
+        générés automatiquement et ne reflètent pas la voix de l'utilisateur.
+        """
+        messages = self._chat_repo.get_active_messages(thread_id)
+        checked = 0
+        for msg in messages:
+            if msg.role.value != "user":
+                continue
+            if msg.payload and msg.payload.get("is_internal"):
+                continue
+            if _INTENT_SIGNAL_RE.search(msg.content):
+                logger.debug(
+                    "Intent signal detected early in thread %s (msg %s)",
+                    thread_id, msg.id,
+                )
+                return True
+            checked += 1
+            if checked >= 3:  # On se limite aux 3 premiers messages user
+                break
+        return False
 
     async def maybe_extract(
         self,
@@ -156,8 +248,10 @@ class IntentExtractorService:
             role_label = "Utilisateur" if m.role.value == "user" else "Assistant"
             conversation_lines.append(f"{role_label} : {m.content}")
 
-        # Minimum 4 lignes (2 user + 2 assistant) pour une extraction pertinente
-        if len(conversation_lines) < 4:
+        # Minimum 2 lignes (1 user + 1 assistant) pour une extraction pertinente.
+        # L'extraction précoce (niveau 1) peut s'opérer dès le premier échange
+        # quand l'utilisateur a exprimé une intention claire.
+        if len(conversation_lines) < 2:
             return None
 
         conversation_text = "\n".join(conversation_lines)
