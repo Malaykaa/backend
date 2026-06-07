@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+import unicodedata
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from collections import Counter
 
@@ -21,98 +24,151 @@ _GOAL_TO_OFFER_TYPES: dict[str, list[str]] = {
     "exam":        ["scholarship", "grant"],
 }
 
-# Liens de formation de qualité par compétence — fallback si aucune offre type=formation scrapée
-_SKILL_FORMATIONS: dict[str, dict] = {
-    "Python": {
-        "url": "https://www.coursera.org/learn/python",
-        "title": "Python for Everybody — University of Michigan",
-        "platform": "Coursera",
-    },
-    "Data Analysis": {
-        "url": "https://www.coursera.org/professional-certificates/google-data-analytics",
-        "title": "Google Data Analytics Professional Certificate",
-        "platform": "Coursera",
-    },
-    "Excel / Reporting": {
-        "url": "https://www.youtube.com/watch?v=Vl0H-qTclOg",
-        "title": "Excel complet pour débutants — YouTube",
-        "platform": "YouTube",
-    },
-    "Gestion de projet": {
-        "url": "https://www.coursera.org/professional-certificates/google-project-management",
-        "title": "Google Project Management Certificate",
-        "platform": "Coursera",
-    },
-    "Communication": {
-        "url": "https://www.coursera.org/learn/wharton-communication-skills",
-        "title": "Communication Skills for Professionals — Wharton",
-        "platform": "Coursera",
-    },
-    "Anglais": {
-        "url": "https://www.duolingo.com",
-        "title": "Anglais professionnel — Duolingo",
-        "platform": "Duolingo",
-    },
-    "Marketing Digital": {
-        "url": "https://learndigital.withgoogle.com/ateliersnumeriques/",
-        "title": "Marketing Digital gratuit — Google Ateliers Numériques",
-        "platform": "Google",
-    },
-    "Comptabilité": {
-        "url": "https://www.coursera.org/specializations/accounting-fundamentals",
-        "title": "Accounting Fundamentals — University of Virginia",
-        "platform": "Coursera",
-    },
-    "Développement web": {
-        "url": "https://www.freecodecamp.org/learn/responsive-web-design/",
-        "title": "Responsive Web Design Certification — freeCodeCamp",
-        "platform": "freeCodeCamp",
-    },
-    "Machine Learning": {
-        "url": "https://www.coursera.org/specializations/machine-learning-introduction",
-        "title": "Machine Learning Specialization — Andrew Ng",
-        "platform": "Coursera",
-    },
-    "SQL": {
-        "url": "https://www.youtube.com/watch?v=HXV3zeQKqGY",
-        "title": "SQL Full Course — freeCodeCamp (YouTube)",
-        "platform": "YouTube",
-    },
-    "Rédaction technique": {
-        "url": "https://developers.google.com/tech-writing",
-        "title": "Technical Writing — Google Developers (gratuit)",
-        "platform": "Google",
-    },
-    "Finance": {
-        "url": "https://www.coursera.org/learn/understanding-financial-statements",
-        "title": "Understanding Financial Statements — Coursera",
-        "platform": "Coursera",
-    },
-    "Agile / Scrum": {
-        "url": "https://www.coursera.org/learn/agile-meets-design-thinking",
-        "title": "Agile Meets Design Thinking — University of Virginia",
-        "platform": "Coursera",
-    },
-    "Java": {
-        "url": "https://www.mooc.fi/en/",
-        "title": "Java Programming MOOC — University of Helsinki (gratuit)",
-        "platform": "MOOC.fi",
-    },
-    "React / Frontend": {
-        "url": "https://react.dev/learn",
-        "title": "Apprendre React — Documentation officielle",
-        "platform": "react.dev",
-    },
-    "Leadership": {
-        "url": "https://www.coursera.org/specializations/leadership-development",
-        "title": "Leadership Development for Professionals — Coursera",
-        "platform": "Coursera",
-    },
-    "Vente / Commercial": {
-        "url": "https://www.coursera.org/professional-certificates/salesforce-sales-development-representative",
-        "title": "Salesforce Sales Development Representative Certificate",
-        "platform": "Coursera",
-    },
+# ── Mots vides — exclus de l'extraction de compétences ───────────────────────
+# Couvre le français, l'anglais et le boilerplate typique des offres d'emploi.
+_STOP_WORDS: frozenset[str] = frozenset({
+    # Français — mots grammaticaux
+    "le","la","les","de","du","des","un","une","et","en","a","au","aux",
+    "par","pour","sur","avec","dans","que","qui","est","sont","etre","avoir",
+    "faire","plus","tres","bien","tout","cette","notre","votre","leur","leurs",
+    "vous","nous","ils","elles","son","ses","mon","mes","ton","tes","ou","ni",
+    "mais","donc","or","car","si","ne","pas","moins","aussi","comme","meme",
+    "entre","sans","sous","vers","chez","dont","ou","selon","lors","des",
+    "afin","ainsi","apres","avant","depuis","pendant","autres","autre",
+    "tous","toute","toutes","chaque","plusieurs","certains","certaines",
+    "ces","cet","peu","assez","trop","alors","enfin","puis","cela","ceci",
+    # Anglais — mots grammaticaux
+    "the","a","an","of","in","to","for","and","or","at","by","from","with",
+    "on","is","are","was","were","be","been","being","have","has","had","do",
+    "does","did","will","would","could","should","may","might","must","shall",
+    "can","not","no","so","if","this","that","these","those","it","its","we",
+    "you","they","he","she","our","your","their","which","who","what","when",
+    "where","how","all","any","both","each","few","more","other","some",
+    "such","than","too","very","just","about","into","up","down","out","off",
+    "only","own","same","then","through","while","as","its","his","her",
+    "him","them","whose","whom","new","must","able","well","also","including",
+    # Boilerplate offres d'emploi (FR)
+    "profil","poste","offre","emploi","stage","cdi","cdd","hf","fh","candidature",
+    "recherche","recrute","recrutement","experience","exp","minimum","requis",
+    "requises","souhaite","souhaites","connaissance","connaissances","maitrise",
+    "travail","entreprise","societe","client","clients","equipe","projet","projets",
+    "bac","licence","master","doctorat","diplome","junior","senior","confirme",
+    "debutant","temps","plein","partiel","presentiel","teletravail","salaire",
+    "remuneration","contrat","duree","service","services","support","aide",
+    "assistance","competences","qualites","aptitudes","responsabilites","missions",
+    "taches","activites","formations","certificat","certification","langues",
+    "langue","international","secteur","domaine","applications","logiciels",
+    "systemes","systeme","outils","outil","cadre","lieu","ville","pays","region",
+    "zone","bureau","agence","niveau","ans","annee","annees","mois","semaine",
+    "avantages","conges","mutuelle","vehicule","permis","disponibilite",
+    # Boilerplate offres d'emploi (EN)
+    "experience","years","year","skills","skill","required","preferred",
+    "knowledge","team","work","working","strong","ability","excellent","good",
+    "proficient","familiar","solid","position","role","job","opportunity",
+    "company","business","responsibilities","requirements","qualifications",
+    "candidate","candidates","apply","application","degree","bachelor",
+    "location","remote","office","salary","benefits","contract","environment",
+    "culture","plus","great","ideal","key","core","main","primary",
+})
+
+# ── Carte de normalisation — variantes → label canonique ─────────────────────
+# Règle : le plus spécifique (bigramme) est testé avant le plus court (unigrame).
+_CANONICAL: dict[str, str] = {
+    # === Langages de programmation ===
+    "python": "Python", "java": "Java", "javascript": "JavaScript",
+    "js": "JavaScript", "typescript": "TypeScript", "ts": "TypeScript",
+    "php": "PHP", "ruby": "Ruby", "swift": "Swift", "kotlin": "Kotlin",
+    "dart": "Dart", "scala": "Scala", "rust": "Rust", "golang": "Go",
+    "go": "Go", "c++": "C/C++", "c#": "C#", "matlab": "Matlab",
+    "bash": "Bash/Linux", "shell": "Bash/Linux",
+    # === Frontend ===
+    "react js": "React", "reactjs": "React", "react": "React",
+    "react native": "React Native", "angular": "Angular",
+    "vue js": "Vue.js", "vuejs": "Vue.js", "vue": "Vue.js",
+    "html/css": "HTML/CSS", "html css": "HTML/CSS",
+    "html": "HTML/CSS", "css": "HTML/CSS",
+    "tailwind": "Tailwind CSS", "bootstrap": "Bootstrap", "flutter": "Flutter",
+    # === Backend ===
+    "node js": "Node.js", "nodejs": "Node.js", "node": "Node.js",
+    "spring boot": "Spring Boot", "spring": "Spring Boot",
+    "django": "Django", "flask": "Flask", "fastapi": "FastAPI",
+    "laravel": "Laravel", "symfony": "Symfony",
+    "dotnet": ".NET", ".net": ".NET",
+    "express js": "Express.js", "express": "Express.js",
+    # === Bases de données ===
+    "sql": "SQL", "mysql": "MySQL", "postgresql": "PostgreSQL",
+    "postgres": "PostgreSQL", "mongodb": "MongoDB", "nosql": "NoSQL",
+    "redis": "Redis", "oracle": "Oracle", "firebase": "Firebase",
+    "elasticsearch": "Elasticsearch",
+    # === Cloud & DevOps ===
+    "aws": "AWS", "azure": "Azure",
+    "google cloud": "Google Cloud", "gcp": "Google Cloud",
+    "docker": "Docker", "kubernetes": "Kubernetes", "k8s": "Kubernetes",
+    "ci/cd": "CI/CD", "devops": "DevOps",
+    "terraform": "Terraform", "ansible": "Ansible",
+    "jenkins": "CI/CD", "github actions": "CI/CD",
+    "linux": "Linux", "unix": "Linux", "git": "Git",
+    # === Data & IA ===
+    "machine learning": "Machine Learning", "deep learning": "Deep Learning",
+    "intelligence artificielle": "IA / Intelligence Artificielle",
+    "artificial intelligence": "IA / Intelligence Artificielle",
+    "data science": "Data Science",
+    "data analysis": "Analyse de données", "data analyst": "Analyse de données",
+    "analyse de donnees": "Analyse de données",
+    "big data": "Big Data", "power bi": "Power BI",
+    "tableau": "Tableau", "nlp": "NLP / Traitement du langage",
+    "computer vision": "Computer Vision",
+    "tensorflow": "Machine Learning", "pytorch": "Machine Learning",
+    "pandas": "Python", "numpy": "Python",
+    # === Business / Gestion ===
+    "excel": "Excel / Reporting", "vba": "Excel / Reporting",
+    "pack office": "Pack Office", "microsoft office": "Pack Office",
+    "powerpoint": "Pack Office",
+    "gestion de projet": "Gestion de projet",
+    "project management": "Gestion de projet",
+    "chef de projet": "Gestion de projet",
+    "marketing digital": "Marketing Digital",
+    "digital marketing": "Marketing Digital",
+    "seo": "SEO / SEM", "sem": "SEO / SEM",
+    "community management": "Community Management",
+    "reseaux sociaux": "Community Management",
+    "social media": "Community Management",
+    "crm": "CRM", "salesforce": "CRM",
+    "erp": "ERP / SAP", "sap": "ERP / SAP", "odoo": "ERP / SAP",
+    "comptabilite": "Comptabilité", "accounting": "Comptabilité",
+    "finance": "Finance",
+    "audit": "Audit / Contrôle de gestion",
+    "controle de gestion": "Audit / Contrôle de gestion",
+    "fiscalite": "Fiscalité",
+    "ressources humaines": "Ressources Humaines",
+    "rh": "Ressources Humaines", "human resources": "Ressources Humaines",
+    "hr": "Ressources Humaines", "paie": "Ressources Humaines",
+    "communication": "Communication",
+    "redaction": "Rédaction / Contenu",
+    "copywriting": "Rédaction / Contenu",
+    "leadership": "Leadership",
+    "agile": "Agile / Scrum", "scrum": "Agile / Scrum",
+    "kanban": "Agile / Scrum", "jira": "Agile / Scrum",
+    "vente": "Vente / Commercial", "commercial": "Vente / Commercial",
+    "sales": "Vente / Commercial",
+    "negociation": "Négociation",
+    "supply chain": "Logistique / Supply Chain",
+    "logistique": "Logistique / Supply Chain",
+    "achats": "Achats / Procurement", "procurement": "Achats / Procurement",
+    # === Design ===
+    "ux/ui": "UX/UI Design", "ux": "UX/UI Design", "ui": "UX/UI Design",
+    "figma": "UX/UI Design",
+    "photoshop": "Adobe Creative Suite", "illustrator": "Adobe Creative Suite",
+    "adobe": "Adobe Creative Suite",
+    "design graphique": "Design graphique",
+    # === Cybersécurité ===
+    "cybersecurite": "Cybersécurité", "cybersecurity": "Cybersécurité",
+    "securite informatique": "Cybersécurité",
+    "pentest": "Cybersécurité", "penetration testing": "Cybersécurité",
+    # === Réseaux / Télécoms ===
+    "reseaux": "Réseaux / Télécoms", "reseau": "Réseaux / Télécoms",
+    "cisco": "Réseaux / Télécoms", "telecoms": "Réseaux / Télécoms",
+    "telecommunications": "Réseaux / Télécoms",
 }
 
 _ORIENTATION_LABELS: dict[str, str] = {
@@ -126,37 +182,168 @@ _ORIENTATION_LABELS: dict[str, str] = {
     "resource":              "Ressource",
 }
 
-# Pays africains reconnus pour la géolocalisation des offres
-AFRICAN_COUNTRIES = [
-    "nigeria", "côte d'ivoire", "cote d'ivoire", "ghana", "kenya", "sénégal",
-    "senegal", "cameroun", "cameroon", "maroc", "morocco", "tanzanie", "tanzania",
-    "ethiopie", "ethiopia", "ouganda", "uganda", "rwanda", "mali", "burkina faso",
-    "guinée", "guinea", "bénin", "benin", "togo", "niger", "madagascar",
-    "mozambique", "zambie", "zambia", "zimbabwe", "angola", "afrique du sud",
-    "south africa", "egypte", "egypt", "tunisie", "tunisia", "algérie", "algeria",
-]
+# ── Géolocalisation africaine — 54 pays reconnus ─────────────────────────────
+#
+# Structure : liste de (clé_normalisée, label_affiché).
+# - La clé est sans accents, minuscules → compare avec _normalize(location).
+# - Triée par longueur décroissante : les entrées les plus longues sont testées
+#   en premier pour éviter les faux positifs ("niger" matchant "nigeria",
+#   "guinea" matchant "guinea-bissau", etc.).
+# - Plusieurs clés par pays (FR + EN + variantes) → même label affiché.
 
-# Skills à détecter dans les titres/descriptions
-SKILL_KEYWORDS: list[tuple[str, str]] = [
-    ("Python", "python"),
-    ("Data Analysis", "data analy"),
-    ("Excel / Reporting", "excel"),
-    ("Gestion de projet", "gestion de projet"),
-    ("Communication", "communication"),
-    ("Anglais", "anglais"),
-    ("Marketing Digital", "marketing digital"),
-    ("Comptabilité", "comptabilit"),
-    ("Développement web", "développement web"),
-    ("Machine Learning", "machine learning"),
-    ("SQL", " sql"),
-    ("Rédaction technique", "rédaction"),
-    ("Finance", "financ"),
-    ("Agile / Scrum", "agile"),
-    ("Java", " java"),
-    ("React / Frontend", "react"),
-    ("Leadership", "leadership"),
-    ("Vente / Commercial", "commercial"),
-]
+_AFRICAN_GEO: list[tuple[str, str]] = sorted([
+    # Afrique du Nord
+    ("algerie",              "Algérie"),
+    ("algeria",              "Algérie"),
+    ("maroc",                "Maroc"),
+    ("morocco",              "Maroc"),
+    ("tunisie",              "Tunisie"),
+    ("tunisia",              "Tunisie"),
+    ("libye",                "Libye"),
+    ("libya",                "Libye"),
+    ("egypte",               "Égypte"),
+    ("egypt",                "Égypte"),
+    ("mauritanie",           "Mauritanie"),
+    ("mauritania",           "Mauritanie"),
+    ("soudan",               "Soudan"),
+    ("sudan",                "Soudan"),
+
+    # Afrique de l'Ouest
+    ("nigeria",              "Nigeria"),
+    ("cote d'ivoire",        "Côte d'Ivoire"),
+    ("cote d ivoire",        "Côte d'Ivoire"),   # variante sans apostrophe
+    ("ivory coast",          "Côte d'Ivoire"),
+    ("ghana",                "Ghana"),
+    ("senegal",              "Sénégal"),
+    ("mali",                 "Mali"),
+    ("burkina faso",         "Burkina Faso"),
+    ("guinea-bissau",        "Guinée-Bissau"),
+    ("guinee-bissau",        "Guinée-Bissau"),
+    ("guinee equatoriale",   "Guinée Équatoriale"),
+    ("equatorial guinea",    "Guinée Équatoriale"),
+    ("guinee",               "Guinée"),
+    ("guinea",               "Guinée"),
+    ("benin",                "Bénin"),
+    ("togo",                 "Togo"),
+    ("niger",                "Niger"),
+    ("sierra leone",         "Sierra Leone"),
+    ("liberia",              "Libéria"),
+    ("gambie",               "Gambie"),
+    ("gambia",               "Gambie"),
+    ("cap-vert",             "Cap-Vert"),
+    ("cape verde",           "Cap-Vert"),
+    ("sao tome",             "São Tomé-et-Príncipe"),
+
+    # Afrique Centrale
+    ("cameroun",             "Cameroun"),
+    ("cameroon",             "Cameroun"),
+    ("republique democratique du congo", "RDC"),
+    ("democratic republic of the congo", "RDC"),
+    ("congo-kinshasa",       "RDC"),
+    ("rdc",                  "RDC"),
+    ("drc",                  "RDC"),   # abréviation anglaise
+    ("republique du congo",  "Congo-Brazzaville"),
+    ("republic of the congo","Congo-Brazzaville"),
+    ("congo-brazzaville",    "Congo-Brazzaville"),
+    ("gabon",                "Gabon"),
+    ("tchad",                "Tchad"),
+    ("chad",                 "Tchad"),
+    ("republique centrafricaine", "Centrafrique"),
+    ("central african republic",  "Centrafrique"),
+    ("rca",                  "Centrafrique"),
+    ("angola",               "Angola"),
+    ("guinee equatoriale",   "Guinée Équatoriale"),
+    ("equatorial guinea",    "Guinée Équatoriale"),
+    ("sao tome-et-principe", "São Tomé-et-Príncipe"),
+
+    # Afrique de l'Est
+    ("ethiopie",             "Éthiopie"),
+    ("ethiopia",             "Éthiopie"),
+    ("kenya",                "Kenya"),
+    ("tanzanie",             "Tanzanie"),
+    ("tanzania",             "Tanzanie"),
+    ("ouganda",              "Ouganda"),
+    ("uganda",               "Ouganda"),
+    ("rwanda",               "Rwanda"),
+    ("burundi",              "Burundi"),
+    ("somalie",              "Somalie"),
+    ("somalia",              "Somalie"),
+    ("djibouti",             "Djibouti"),
+    ("erythree",             "Érythrée"),
+    ("eritrea",              "Érythrée"),
+    ("soudan du sud",        "Soudan du Sud"),
+    ("south sudan",          "Soudan du Sud"),
+    ("mozambique",           "Mozambique"),
+    ("madagascar",           "Madagascar"),
+    ("comores",              "Comores"),
+    ("comoros",              "Comores"),
+    ("seychelles",           "Seychelles"),
+    ("maurice",              "Maurice"),
+    ("mauritius",            "Maurice"),
+
+    # Afrique Australe
+    ("afrique du sud",       "Afrique du Sud"),
+    ("south africa",         "Afrique du Sud"),
+    ("zimbabwe",             "Zimbabwe"),
+    ("zambie",               "Zambie"),
+    ("zambia",               "Zambie"),
+    ("namibie",              "Namibie"),
+    ("namibia",              "Namibie"),
+    ("botswana",             "Botswana"),
+    ("malawi",               "Malawi"),
+    ("lesotho",              "Lesotho"),
+    ("eswatini",             "Eswatini"),
+    ("swaziland",            "Eswatini"),
+], key=lambda x: -len(x[0]))  # plus long d'abord → évite les faux positifs
+
+# Rétro-compatibilité : garder AFRICAN_COUNTRIES pour le code qui l'utilise directement
+AFRICAN_COUNTRIES = [key for key, _ in _AFRICAN_GEO]
+
+
+
+def _normalize(text: str) -> str:
+    """Minuscules + suppression des accents pour la comparaison."""
+    nfkd = unicodedata.normalize("NFD", text.lower())
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
+def _extract_canonical_skills(rows: list) -> Counter:
+    """Extrait les compétences canoniques de chaque offre (titre + description).
+
+    Stratégie :
+    - On teste d'abord les bigrammes (plus spécifiques), puis les unigrammes.
+    - Chaque compétence est comptée une seule fois par offre, même si elle
+      apparaît plusieurs fois dans le texte.
+    - La normalisation (sans accents, minuscules) rend la détection robuste
+      quelle que soit la casse ou l'accentuation dans les offres.
+    """
+    counter: Counter = Counter()
+    token_re = re.compile(r"[a-z0-9#+./\-]{2,}")
+
+    for title, desc in rows:
+        raw = _normalize(f"{title or ''} {desc or ''}")
+        tokens = token_re.findall(raw)
+
+        found: set[str] = set()
+
+        # 1. Bigrammes — testés en priorité (ex: "machine learning" > "machine")
+        for i in range(len(tokens) - 1):
+            bigram = f"{tokens[i]} {tokens[i + 1]}"
+            canonical = _CANONICAL.get(bigram)
+            if canonical:
+                found.add(canonical)
+
+        # 2. Unigrammes — uniquement si pas déjà couvert par un bigramme
+        for token in tokens:
+            if token in _STOP_WORDS:
+                continue
+            canonical = _CANONICAL.get(token)
+            if canonical and canonical not in found:
+                found.add(canonical)
+
+        counter.update(found)
+
+    return counter
 
 
 class TrendsService:
@@ -203,16 +390,18 @@ class TrendsService:
             .limit(limit * 3)
         ).all()
 
-        # Normaliser : garder uniquement pays africains reconnus
+        # Normaliser : garder uniquement pays africains reconnus.
+        # _normalize() supprime les accents → matching robuste quelle que soit
+        # la casse ou l'accentuation dans le champ location des offres.
+        # _AFRICAN_GEO est trié du plus long au plus court → pas de faux positif
+        # (ex: "niger" ne matche pas avant "nigeria").
         country_counts: Counter = Counter()
         for loc, cnt in rows:
             if not loc:
                 continue
-            loc_lower = loc.lower()
-            for country in AFRICAN_COUNTRIES:
-                if country in loc_lower:
-                    # Capitaliser proprement
-                    display = country.title().replace("D'", "d'")
+            loc_norm = _normalize(loc)
+            for key, display in _AFRICAN_GEO:
+                if key in loc_norm:
                     country_counts[display] += cnt
                     break
             else:
@@ -337,70 +526,62 @@ class TrendsService:
     # ── Bloc 3 : Compétences montantes ───────────────────────────────────────
 
     def get_competences(self) -> list[dict]:
-        """Détecte les compétences les plus demandées dans les offres récentes."""
-        cutoff = datetime.now(timezone.utc) - timedelta(days=30)
-        cutoff_prev = datetime.now(timezone.utc) - timedelta(days=60)
+        """Détecte les compétences les plus demandées — extraction dynamique sur toutes les offres.
 
-        # Récupérer titres + descriptions récents
-        recent_rows = self.db.execute(
-            select(ScrapedOffer.title, ScrapedOffer.description)
-            .where(
-                ScrapedOffer.is_active.is_(True),
-                ScrapedOffer.scraped_at >= cutoff,
-                ScrapedOffer.offer_type.in_([
-                    ScrapedOfferType.job, ScrapedOfferType.opportunity, ScrapedOfferType.formation
-                ]),
+        - Aucune liste hardcodée : les compétences émergent directement des offres.
+        - Aucune limite d'offres : toutes les offres actives de la période sont analysées.
+        - Seuil minimum : une compétence doit apparaître dans au moins 2 % des offres.
+        - Comparaison sur la période précédente (J-30 à J-60) pour calculer la variation.
+        """
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=30)
+        cutoff_prev = now - timedelta(days=60)
+
+        _ELIGIBLE_TYPES = [
+            ScrapedOfferType.job,
+            ScrapedOfferType.opportunity,
+            ScrapedOfferType.formation,
+            ScrapedOfferType.scholarship,
+            ScrapedOfferType.grant,
+            ScrapedOfferType.call_for_applications,
+        ]
+
+        def _fetch(date_from: datetime, date_to: datetime | None = None):
+            stmt = (
+                select(ScrapedOffer.title, ScrapedOffer.description)
+                .where(
+                    ScrapedOffer.is_active.is_(True),
+                    ScrapedOffer.scraped_at >= date_from,
+                    ScrapedOffer.offer_type.in_(_ELIGIBLE_TYPES),
+                )
             )
-            .limit(500)
-        ).all()
+            if date_to is not None:
+                stmt = stmt.where(ScrapedOffer.scraped_at < date_to)
+            return self.db.execute(stmt).all()
 
-        prev_rows = self.db.execute(
-            select(ScrapedOffer.title, ScrapedOffer.description)
-            .where(
-                ScrapedOffer.is_active.is_(True),
-                ScrapedOffer.scraped_at >= cutoff_prev,
-                ScrapedOffer.scraped_at < cutoff,
-                ScrapedOffer.offer_type.in_([
-                    ScrapedOfferType.job, ScrapedOfferType.opportunity, ScrapedOfferType.formation
-                ]),
-            )
-            .limit(500)
-        ).all()
-
-        def count_skills(rows) -> Counter:
-            counts: Counter = Counter()
-            for title, desc in rows:
-                text = ((title or "") + " " + (desc or "")).lower()
-                for skill_label, keyword in SKILL_KEYWORDS:
-                    if keyword in text:
-                        counts[skill_label] += 1
-            return counts
-
-        counts_recent = count_skills(recent_rows)
-        counts_prev = count_skills(prev_rows)
+        recent_rows = _fetch(cutoff)
+        prev_rows   = _fetch(cutoff_prev, cutoff)
 
         total_recent = len(recent_rows) or 1
-        total_prev = len(prev_rows) or 1
+        total_prev   = len(prev_rows)   or 1
+
+        counts_recent = _extract_canonical_skills(recent_rows)
+        counts_prev   = _extract_canonical_skills(prev_rows)
 
         results = []
-        for skill_label, _ in SKILL_KEYWORDS:
-            cnt = counts_recent.get(skill_label, 0)
-            if cnt == 0:
-                continue
-            prev_cnt = counts_prev.get(skill_label, 0)
-            pct_recent = round((cnt / total_recent) * 100)
-            pct_prev = round((prev_cnt / total_prev) * 100) if prev_cnt else 0
-            variation = pct_recent - pct_prev
-
+        for skill, count in counts_recent.most_common(20):
+            pct_recent = round(count / total_recent * 100)
+            if pct_recent < 2:   # compétence trop marginale
+                break
+            pct_prev = round(counts_prev.get(skill, 0) / total_prev * 100)
             results.append({
-                "competence": skill_label,
-                "count": cnt,
-                "pct_offres": pct_recent,
-                "variation_pts": variation,
+                "competence":    skill,
+                "count":         count,
+                "pct_offres":    pct_recent,
+                "variation_pts": pct_recent - pct_prev,
             })
 
-        results.sort(key=lambda x: x["count"], reverse=True)
-        return results[:6]
+        return results[:10]
 
     # ── Bloc 4 : Vue Globale ──────────────────────────────────────────────────
 
@@ -594,12 +775,11 @@ class TrendsService:
             for loc, cnt in rows:
                 if not loc:
                     continue
-                loc_lower = loc.lower()
-                if country_lower in loc_lower:
+                loc_norm = _normalize(loc)
+                if country_lower in loc_norm:
                     continue
-                for ac in AFRICAN_COUNTRIES:
-                    if ac in loc_lower:
-                        display = ac.title().replace("D'", "d'")
+                for ac, display in _AFRICAN_GEO:
+                    if ac in loc_norm:
                         alt_counts[display] += cnt
                         break
                 else:
@@ -635,10 +815,9 @@ class TrendsService:
             for loc, cnt in comp_rows:
                 if not loc:
                     continue
-                loc_lower = loc.lower()
-                for ac in AFRICAN_COUNTRIES:
-                    if ac in loc_lower:
-                        display = ac.title().replace("D'", "d'")
+                loc_norm = _normalize(loc)
+                for ac, display in _AFRICAN_GEO:
+                    if ac in loc_norm:
                         global_counts[display] += cnt
                         break
                 else:
@@ -674,66 +853,75 @@ class TrendsService:
     def _enrich_competences(
         self, competences: list[dict], user_skills: list[str]
     ) -> None:
-        user_skills_lower = {s.lower() for s in user_skills if s}
+        """Enrichit chaque compétence avec des données personnalisées et des liens de formation.
+
+        Pour chaque compétence :
+        1. user_has      — comparaison avec le profil utilisateur
+        2. offres_debloquees — nombre d'offres actives liées à cette compétence
+        3. formation_url — cherche d'abord une formation scrapée, sinon Coursera search
+        """
+        user_skills_lower = {_normalize(s) for s in user_skills if s}
         cutoff = datetime.now(timezone.utc) - timedelta(days=30)
-        skill_kw_map = {sl: kw for sl, kw in SKILL_KEYWORDS}
 
         for comp in competences:
             skill_label = comp["competence"]
-            skill_lower = skill_label.lower()
+            skill_norm  = _normalize(skill_label)
+
+            # ── 1. L'utilisateur possède-t-il cette compétence ? ──────────────
             comp["user_has"] = any(
-                skill_lower in us or us in skill_lower
+                skill_norm in us or us in skill_norm
                 for us in user_skills_lower
             ) if user_skills_lower else False
 
-            keyword = skill_kw_map.get(skill_label)
-            if keyword:
-                kw = keyword.strip()
-                unlock_count = int(self.db.execute(
-                    select(func.count(ScrapedOffer.id))
-                    .where(
-                        ScrapedOffer.is_active.is_(True),
-                        ScrapedOffer.scraped_at >= cutoff,
-                        or_(
-                            func.lower(ScrapedOffer.title).contains(kw),
-                            func.lower(ScrapedOffer.description).contains(kw),
-                        ),
-                    )
-                ).scalar_one())
-                comp["offres_debloquees"] = unlock_count
-                comp["skill_keyword"] = kw
-                comp["unlock_max_age"] = 30
+            # ── 2. Mot-clé de recherche : premier segment avant "/" ou espace ─
+            # Ex: "Audit / Contrôle de gestion" → "audit"
+            kw = skill_norm.split("/")[0].strip().split()[0]
+            comp["skill_keyword"]  = kw
+            comp["unlock_max_age"] = 30
 
-                # Chercher une formation scrapée en premier — plus pertinente qu'un lien hardcodé
-                scraped_formation = self.db.execute(
-                    select(ScrapedOffer.url, ScrapedOffer.title)
-                    .where(
-                        ScrapedOffer.is_active.is_(True),
-                        ScrapedOffer.scraped_at >= cutoff,
-                        ScrapedOffer.offer_type == ScrapedOfferType.formation,
-                        or_(
-                            func.lower(ScrapedOffer.title).contains(kw),
-                            func.lower(ScrapedOffer.description).contains(kw),
-                        ),
-                        ScrapedOffer.url.isnot(None),
-                    )
-                    .order_by(func.coalesce(ScrapedOffer.quality_score, 0).desc())
-                    .limit(1)
-                ).first()
+            # ── 3. Nombre d'offres actives liées ─────────────────────────────
+            unlock_count = int(self.db.execute(
+                select(func.count(ScrapedOffer.id))
+                .where(
+                    ScrapedOffer.is_active.is_(True),
+                    ScrapedOffer.scraped_at >= cutoff,
+                    or_(
+                        func.lower(ScrapedOffer.title).contains(kw),
+                        func.lower(ScrapedOffer.description).contains(kw),
+                    ),
+                )
+            ).scalar_one())
+            comp["offres_debloquees"] = unlock_count
 
-                if scraped_formation and scraped_formation[0]:
-                    comp["formation_url"]   = scraped_formation[0]
-                    comp["formation_title"] = scraped_formation[1] or skill_label
-                    comp["formation_platform"] = "Malayka"
-                else:
-                    # Fallback sur le lien curé
-                    fallback = _SKILL_FORMATIONS.get(skill_label)
-                    if fallback:
-                        comp["formation_url"]      = fallback["url"]
-                        comp["formation_title"]    = fallback["title"]
-                        comp["formation_platform"] = fallback["platform"]
+            # ── 4. Lien de formation ──────────────────────────────────────────
+            # Priorité 1 : formation scrapée en base (la plus pertinente et à jour)
+            scraped = self.db.execute(
+                select(ScrapedOffer.url, ScrapedOffer.title)
+                .where(
+                    ScrapedOffer.is_active.is_(True),
+                    ScrapedOffer.scraped_at >= cutoff,
+                    ScrapedOffer.offer_type == ScrapedOfferType.formation,
+                    or_(
+                        func.lower(ScrapedOffer.title).contains(kw),
+                        func.lower(ScrapedOffer.description).contains(kw),
+                    ),
+                    ScrapedOffer.url.isnot(None),
+                )
+                .order_by(func.coalesce(ScrapedOffer.quality_score, 0).desc())
+                .limit(1)
+            ).first()
+
+            if scraped and scraped[0]:
+                comp["formation_url"]      = scraped[0]
+                comp["formation_title"]    = scraped[1] or skill_label
+                comp["formation_platform"] = "Malayka"
             else:
-                comp["offres_debloquees"] = 0
+                # Priorité 2 : recherche Coursera (universel, pas de lien mort)
+                comp["formation_url"]      = (
+                    f"https://www.coursera.org/search?query={urllib.parse.quote(skill_label)}"
+                )
+                comp["formation_title"]    = f"Se former : {skill_label}"
+                comp["formation_platform"] = "Coursera"
 
     def _enrich_vue_globale(
         self, vue_globale: dict, goal_types: list[str]

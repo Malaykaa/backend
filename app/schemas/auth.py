@@ -125,6 +125,55 @@ class ChangePasswordRequest(BaseModel):
     new_password: str = Field(min_length=8, max_length=128)
 
 
+class CheckPhoneRequest(BaseModel):
+    """Vérifie si un numéro est déjà associé à un compte."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    phone: str = Field(min_length=8, max_length=30)
+
+    @field_validator("phone")
+    @classmethod
+    def phone_must_contain_digits(cls, v: str) -> str:
+        cleaned = re.sub(r"\D", "", v)
+        if len(cleaned) < 8:
+            raise ValueError("Numéro de téléphone invalide (min 8 chiffres).")
+        return v
+
+
+class ForgotPasswordRequest(BaseModel):
+    """Demande de réinitialisation de mot de passe via OTP WhatsApp."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    phone: str = Field(min_length=8, max_length=30)
+
+    @field_validator("phone")
+    @classmethod
+    def phone_must_contain_digits(cls, v: str) -> str:
+        cleaned = re.sub(r"\D", "", v)
+        if len(cleaned) < 8:
+            raise ValueError("Numéro de téléphone invalide (min 8 chiffres).")
+        return v
+
+
+class ResetPasswordRequest(BaseModel):
+    """Réinitialisation du mot de passe après vérification OTP."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    phone: str = Field(min_length=8, max_length=30)
+    code: str = Field(min_length=6, max_length=6)
+    new_password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("code")
+    @classmethod
+    def code_must_be_digits(cls, v: str) -> str:
+        if not re.fullmatch(r"\d{6}", v):
+            raise ValueError("Le code doit contenir exactement 6 chiffres.")
+        return v
+
+
 # â”€â”€ RÃ©ponses â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 

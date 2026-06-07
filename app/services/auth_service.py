@@ -205,6 +205,27 @@ class AuthService:
             raise UnauthorizedError("Mot de passe actuel incorrect.")
         user.password_hash = hash_password(new_password)
 
+    def reset_password(self, phone: str, code: str, new_password: str) -> None:
+        """Réinitialise le mot de passe via OTP WhatsApp (utilisateur non authentifié).
+
+        Flow : /auth/forgot-password envoie l'OTP → l'utilisateur le saisit ici
+        avec son nouveau mot de passe. Retourne toujours la même erreur générique
+        que l'OTP soit invalide ou que le numéro n'existe pas (évite l'énumération).
+        L'appelant est responsable du db.commit().
+        """
+        if not self._verify_otp_code(phone, code):
+            raise BadRequestError("Code OTP invalide ou expiré.")
+
+        normalized = self._normalize_phone(phone)
+        user = self.user_repo.get_by_phone(normalized)
+        if not user:
+            raise BadRequestError("Code OTP invalide ou expiré.")
+
+        if not user.is_active:
+            raise UnauthorizedError("Compte désactivé.")
+
+        user.password_hash = hash_password(new_password)
+
     # ── Privé ────────────────────────────────────────────
 
     def _verify_otp_code(self, phone: str, code: str) -> bool:
