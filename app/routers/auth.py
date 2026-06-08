@@ -14,10 +14,13 @@ from app.models.user import User
 from app.schemas.auth import (
     AuthResultResponse,
     ChangePasswordRequest,
+    CheckPhoneRequest,
+    ForgotPasswordRequest,
     LoginPhoneRequest,
     LoginRequest,
     MeResponse,
     RegisterRequest,
+    ResetPasswordRequest,
     SendOtpRequest,
     VerifyOtpRegisterRequest,
 )
@@ -115,6 +118,54 @@ async def send_otp(
     return await AuthService.send_otp_static(body.phone, background_tasks)
 
 
+@router.post("/check-phone")
+@limiter.limit("10/minute")
+def check_phone(
+    request: Request,
+    body: CheckPhoneRequest,
+    db: Annotated[Session, Depends(get_db)],
+):
+    """Vérifie si un numéro de téléphone est déjà associé à un compte.
+
+    Utilisé à l'étape 1 de l'inscription pour informer l'utilisateur
+    avant l'envoi de l'OTP, sans révéler d'informations sensibles au-delà
+    de l'existence du compte.
+    """
+    from app.repositories.user_repo import UserRepository
+    normalized = AuthService._normalize_phone(body.phone)
+    exists = UserRepository(db).get_by_phone(normalized) is not None
+    return {"exists": exists}
+
+
+@router.post("/forgot-password")
+@limiter.limit("3/15minute")
+async def forgot_password(
+    request: Request,
+    body: ForgotPasswordRequest,
+    background_tasks: BackgroundTasks,
+):
+    """Envoie un OTP WhatsApp pour réinitialiser le mot de passe.
+
+    Retourne toujours {"ok": true} même si le numéro n'existe pas en base
+    afin d'éviter l'énumération de comptes (account enumeration).
+    """
+    return await AuthService.send_otp_static(body.phone, background_tasks)
+
+
+@router.post("/reset-password")
+@limiter.limit("5/15minute")
+def reset_password(
+    request: Request,
+    body: ResetPasswordRequest,
+    db: Annotated[Session, Depends(get_db)],
+):
+    """Réinitialise le mot de passe après vérification de l'OTP WhatsApp."""
+    service = AuthService(db)
+    service.reset_password(body.phone, body.code, body.new_password)
+    db.commit()
+    return {"ok": True}
+
+
 @router.post("/verify-otp-register", response_model=AuthResultResponse, status_code=201)
 @limiter.limit("10/minute")
 def verify_otp_register(
@@ -164,7 +215,9 @@ def refresh_token(
     service = AuthService(db)
     new_access, new_refresh = service.refresh(refresh_token)
     _set_auth_cookies(response, new_access, new_refresh)
-    return {"detail": "Token rafraîchi."}
+    # Retourner le nouvel access token dans le corps pour que le frontend
+    # puisse mettre à jour son token en mémoire (sans relire le cookie httpOnly).
+    return {"accessToken": new_access}
 
 @router.get("/me", response_model=MeResponse)
 def get_me(

@@ -569,10 +569,13 @@ class AsyncChatService:
         profile: dict | None = None,
         attachment_ids: list[str] | None = None,
         display_content: str | None = None,
+        user_payload: dict | None = None,
     ) -> AsyncIterator[ProgressEvent]:
         bind_chat_context(thread_id=str(thread_id), user_id=str(user_id))
         thread, ctx = await self._prepare_context(
-            thread_id, user_id, content, profile, attachment_ids=attachment_ids,
+            thread_id, user_id, content, profile,
+            user_payload=user_payload,
+            attachment_ids=attachment_ids,
             display_content=display_content,
         )
 

@@ -189,6 +189,12 @@ def _format_message(msg, inject: bool = True) -> FrontendMessage:
             # Conversational message: inject interactive step/suggestion markers
             content = inject_markers(content, msg.payload)
 
+        # Étape de plan d'action complétée — clé composite persistée côté serveur
+        # pour permettre la synchronisation multi-appareils sans localStorage.
+        step_key = msg.payload.get("completed_step_key")
+        if step_key:
+            meta_parts["completedStepKey"] = step_key
+
         if meta_parts:
             metadata = meta_parts
 
@@ -552,6 +558,7 @@ async def stream_message(
             profile=profile,
             attachment_ids=body.attachment_ids,
             display_content=body.display_content,
+            user_payload=body.metadata,
         ):
             # PlanService est sync — exécuté dans un thread isolé après l'event done
             if event.type == EventType.done and event.agent_response:

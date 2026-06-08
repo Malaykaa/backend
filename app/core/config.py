@@ -28,8 +28,8 @@ class Settings(BaseSettings):
     # Sécurité / Auth (JWT httpOnly cookies)
     jwt_secret_key: str = JWT_DEFAULT_SECRET
     jwt_algorithm: str = "HS256"
-    access_token_expire_minutes: int = 15
-    refresh_token_expire_days: int = 7
+    access_token_expire_minutes: int = 60
+    refresh_token_expire_days: int = 30
 
     # LLM
     llm_provider: Literal["mock", "openai", "gemini", "claude"] = "mock"
