@@ -174,7 +174,7 @@ class PerplexityService:
                 stats["queried"] += 1
                 stats["extracted"] += len(offers)
                 for offer_data in offers:
-                    if self._store(offer_data):
+                    if await asyncio.to_thread(self._store, offer_data):
                         stats["stored"] += 1
                 await asyncio.sleep(1.5)  # Rate limit
             except Exception:
@@ -200,7 +200,7 @@ class PerplexityService:
             offers = await self._query(prompt, offer_type, region)
             stored = 0
             for offer_data in offers:
-                if self._store(offer_data):
+                if await asyncio.to_thread(self._store, offer_data):
                     stored += 1
             if stored:
                 try:

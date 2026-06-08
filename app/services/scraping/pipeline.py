@@ -7,6 +7,7 @@ Porté de post-scrape-pipeline.service.ts (NestJS).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import unicodedata
@@ -186,7 +187,7 @@ async def embed_pending(
     )
     if limit is not None:
         stmt = stmt.limit(limit)
-    offers = list(db.execute(stmt).scalars().all())
+    offers = await asyncio.to_thread(lambda: list(db.execute(stmt).scalars().all()))
     if not offers:
         return 0
 
@@ -199,7 +200,7 @@ async def embed_pending(
             continue
         offer.embedding = vec
         indexed += 1
-    db.flush()
+    await asyncio.to_thread(db.flush)
     if indexed:
         logger.info(
             "[Embeddings] indexed %d/%d offers (limit=%s)",

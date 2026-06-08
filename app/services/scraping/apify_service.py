@@ -406,7 +406,7 @@ class ApifyService:
                 expires = normalized.get("expires_at")
                 if expires and isinstance(expires, datetime) and expires < now:
                     continue
-                if self._upsert(normalized):
+                if await asyncio.to_thread(self._upsert, normalized):
                     stats["stored"] += 1
 
             if stats["stored"]:
