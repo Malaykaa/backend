@@ -84,10 +84,18 @@ ufw --force enable
 ufw status verbose
 
 # ── 9. Certificat SSL Let's Encrypt ───────────────────────────────────────
+# Stockage isolé dans /opt/malaykaa/letsencrypt — PAS /etc/letsencrypt, qui est
+# géré par ISPConfig et nettoie périodiquement les certificats qu'il ne reconnaît
+# pas comme siens (cause d'une perte totale des certs malayka.co constatée le 7/06).
+LE_DIR="/opt/malaykaa/letsencrypt"
+LE_FLAGS="--config-dir $LE_DIR/config --work-dir $LE_DIR/work --logs-dir $LE_DIR/logs"
+mkdir -p "$LE_DIR/config" "$LE_DIR/work" "$LE_DIR/logs"
+
 log "Obtention du certificat SSL pour $DOMAIN..."
 # Le port 80 doit être libre — aucun container frontend ne doit tourner ici
 if certbot certonly \
     --standalone \
+    $LE_FLAGS \
     --non-interactive \
     --agree-tos \
     --register-unsafely-without-email \
@@ -96,11 +104,13 @@ if certbot certonly \
   echo "Certificat obtenu avec succès."
 else
   echo "⚠️  Certbot a échoué. Vérifie que le DNS de $DOMAIN pointe vers ce serveur."
-  echo "    Relance manuellement : certbot certonly --standalone -d $DOMAIN -d www.$DOMAIN"
+  echo "    Relance manuellement : certbot certonly --standalone $LE_FLAGS -d $DOMAIN -d www.$DOMAIN"
 fi
 
-# Renouvellement automatique via cron
-(crontab -l 2>/dev/null; echo "0 3 * * * certbot renew --quiet --deploy-hook 'docker compose -f $PROJECT_PATH/frontend/docker-compose.yml restart frontend'") | crontab -
+# Renouvellement automatique via cron — on retire d'abord toute ancienne ligne
+# "certbot renew" pour éviter les doublons si ce script est relancé.
+CRON_LINE="0 3 * * * certbot renew $LE_FLAGS --quiet --deploy-hook 'docker compose -f $PROJECT_PATH/frontend/docker-compose.yml restart frontend'"
+( crontab -l 2>/dev/null | grep -v "certbot renew"; echo "$CRON_LINE" ) | crontab -
 echo "Cron de renouvellement SSL configuré (tous les jours à 3h)."
 
 # ── 10. Génération de la clé SSH pour GitHub Actions ──────────────────────
