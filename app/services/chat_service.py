@@ -692,3 +692,7 @@ def _sync_extract_intent(
         extractor = IntentExtractorService(sync_db)
         # maybe_extract est async — on crée une boucle locale dans le thread
         _asyncio.run(extractor.maybe_extract(thread_id, user_id, llm))
+        # SessionLocal autocommit=False : flush() seul ne suffit pas,
+        # le commit explicite est obligatoire sinon la transaction est rollbackée
+        # à la fermeture du contexte et l'intention n'est jamais persistée.
+        sync_db.commit()
