@@ -14,8 +14,8 @@ from app.llm import get_llm_provider
 
 logger = logging.getLogger(__name__)
 
-_CACHE_TTL_SECONDS = 4 * 3600  # 4h par utilisateur — équilibre fraîcheur vs coût LLM
-_CACHE_KEY_PREFIX  = "trends:interp:v2:"
+_CACHE_TTL_SECONDS = 2 * 3600  # 2h — réduit la staleness après ajout massif d'offres
+_CACHE_KEY_PREFIX  = "trends:interp:v3:"
 _REDIS_COOLDOWN    = 30
 
 _redis_client: redis_lib.Redis | None = None
@@ -53,13 +53,24 @@ def _cache_key(raw: dict, user_context: dict) -> str:
 
     Deux utilisateurs avec le même profil mais des données marché différentes
     obtiennent des clés différentes. Un utilisateur qui recharge la page dans
-    les 4h obtient le même résultat depuis le cache.
+    les 2h obtient le même résultat depuis le cache.
     """
+    mon_pays = raw.get("mon_pays", {})
     market_fingerprint = {
         "tendances": [(t["type"], t["count"]) for t in raw.get("week_africa", {}).get("tendances", [])],
         "total":     raw.get("vue_globale", {}).get("total_offres", 0),
-        "pays":      raw.get("mon_pays", {}).get("pays", ""),
-        "comps":     [c["competence"] for c in raw.get("competences", [])],
+        # par_type inclus pour détecter les changements de répartition même si le total est stable
+        "par_type":  sorted(raw.get("vue_globale", {}).get("par_type", {}).items()),
+        "pays":      mon_pays.get("pays", ""),
+        # données pays incluses car elles changent indépendamment du total africain
+        "pays_counts": (
+            mon_pays.get("emplois", 0),
+            mon_pays.get("financements", 0),
+            mon_pays.get("missions", 0),
+            mon_pays.get("bourses", 0),
+        ),
+        # pct_offres inclus : même top-10 noms mais % différents → clé différente
+        "comps": [(c["competence"], round(c.get("pct_offres", 0), 1)) for c in raw.get("competences", [])],
     }
     user_fingerprint = {
         "user_id":      user_context.get("user_id", ""),
