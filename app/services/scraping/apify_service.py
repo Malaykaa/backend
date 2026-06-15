@@ -385,7 +385,6 @@ class ApifyService:
             def _run_sync() -> tuple[list, int]:
                 run = client.actor(actor_id).call(
                     run_input=input_data,
-                    timeout_secs=300,
                     memory_mbytes=memory_mbytes,  # option run, pas input actor
                 )
                 dataset_id = run.get("defaultDatasetId") if run else None
