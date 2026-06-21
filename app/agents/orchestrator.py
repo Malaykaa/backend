@@ -14,6 +14,7 @@ from typing import AsyncIterator
 
 from app.agents.base import AgentContext, AgentResponse, SpecializedAgent
 from app.agents.career_agent import CareerAgent
+from app.agents.coursework_agent import CourseworkAgent
 from app.agents.deliverable_configs import detect_doc_type
 from app.agents.document_agent import DocumentAgent, DOCUMENT_FORMAT_SIGNALS
 from app.agents.events import EventType, ProgressEvent
@@ -21,6 +22,7 @@ from app.agents.exam_agent import ExamAgent
 from app.agents.execution_engine import ExecutionEngine
 from app.agents.freelance_agent import FreelanceAgent
 from app.agents.funding_agent import FundingAgent
+from app.agents.orientation_agent import OrientationAgent
 from app.agents.scholarship_agent import ScholarshipAgent
 from app.agents.search_trigger import build_search_query, should_search
 from app.agents.study_grant_agent import StudyGrantAgent
@@ -44,7 +46,9 @@ class _GenericAgent(SpecializedAgent):
 ## Cas 1 — Accueil (salutation ou besoin non précisé)
 Accueille l'utilisateur avec son prénom s'il est connu (champ first_name du profil).
 Présente les domaines où Malayka peut l'accompagner :
+- Orientation scolaire & professionnelle (si pas encore de direction claire)
 - Examens & concours
+- Suivi scolaire & cours au quotidien
 - Bourses d'études & stages
 - Financement & subventions de projet
 - Appels d'offres & marchés publics
@@ -99,6 +103,8 @@ _AGENT_REGISTRY: dict[str, type | None] = {
     GoalType.TENDER:      TenderAgent,
     GoalType.STUDY_GRANT: StudyGrantAgent,
     GoalType.CAREER:      CareerAgent,
+    GoalType.ORIENTATION: OrientationAgent,
+    GoalType.COURSEWORK:  CourseworkAgent,
     GoalType.DOCUMENT:    DocumentAgent,
     GoalType.FREE:        None,
 }

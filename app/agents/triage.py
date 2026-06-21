@@ -42,12 +42,21 @@ Analyse le message et retourne UN SEUL JSON avec :
 3. Le mode d'exécution
 
 ## Intents disponibles
-- exam : préparer un examen, concours, bac, brevet, partiel
+- exam : préparer un examen, concours, bac, brevet, partiel — UNE ÉCHÉANCE PRÉCISE est mentionnée \
+         ou sous-entendue
 - scholarship : chercher une bourse, un stage rémunéré
 - funding : financer un projet, investisseurs, subventions
 - tender : répondre à un appel d'offres, marché public
 - study_grant : étudier à l'étranger, programmes universitaires
-- career : reconversion, changement de métier, emploi, stage
+- career : reconversion, changement de métier, emploi, stage — la DIRECTION est déjà connue, \
+           l'utilisateur cherche à l'exécuter (chercher des offres, préparer un entretien, etc.)
+- orientation : NE SAIT PAS encore quelle filière, quel métier ou quelle direction choisir ; \
+                cherche à s'orienter ; veut identifier ses points forts et compétences à \
+                développer ; reconversion SANS direction claire encore (≠ career, où la \
+                direction est déjà choisie)
+- coursework : besoin d'aide avec son travail scolaire/universitaire ACTUEL — fiches de synthèse, \
+               exercices, programme de révision par matière — SANS échéance d'examen précise \
+               (≠ exam, où une date/concours précis est en jeu)
 - freelance : trouver des missions freelance, proposer ses services, candidater sur Upwork/Malt/Fiverr, \
               rédiger un devis, exécuter une mission, livrer un projet client, tarifs freelance
 - document : générer CV, lettre de motivation, business plan, email pro

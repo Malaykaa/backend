@@ -72,6 +72,12 @@ _CRITICAL_FIELDS: dict[str, list[tuple[str, str]]] = {
     "freelance": [
         ("domain",   "compétence principale ou métier freelance"),
     ],
+    "orientation": [
+        ("domain",   "domaine ou centre d'intérêt, même vague"),
+    ],
+    "coursework": [
+        ("domain",   "filière ou matières principales suivies"),
+    ],
 }
 
 
