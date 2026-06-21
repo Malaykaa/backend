@@ -20,7 +20,13 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.models.scraped_offer import ScrapedOffer, ScrapedOfferType
-from app.services.scraping.pipeline import embed_pending, normalize_title, process_offer
+from app.services.scraping.pipeline import (
+    embed_pending,
+    extract_pending_deadlines,
+    normalize_title,
+    parse_explicit_deadline,
+    process_offer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -146,12 +152,16 @@ _SYSTEM_PROMPT = (
     "1. Return ONLY a valid JSON array — no markdown, no explanation, no code block.\n"
     "2. Each item must have: { \"title\": string, \"description\": string (2-3 sentences), "
     "\"url\": string (real URL from your sources), \"company\": string (organization name), "
-    "\"location\": string (country or region) }\n"
+    "\"location\": string (country or region), \"deadline\": string (ISO date YYYY-MM-DD) or null }\n"
     "3. Only include opportunities with REAL, VERIFIABLE URLs from your search results.\n"
     "4. Do NOT invent URLs. Use only URLs from your citations.\n"
     "5. Each description must be factual and sourced.\n"
     "6. If fewer than 3 results are found, return what you found (do not pad).\n"
-    'Example: [{"title":"...","description":"...","url":"https://...","company":"...","location":"Africa"}]'
+    "7. \"deadline\": set it ONLY if the source page explicitly states an application "
+    "deadline / closing date. Never estimate or guess a date. Use null if no explicit "
+    "deadline is mentioned, or if it has already passed.\n"
+    'Example: [{"title":"...","description":"...","url":"https://...","company":"...",'
+    '"location":"Africa","deadline":"2026-08-15"}]'
 )
 
 _JSON_ARRAY_RE = re.compile(r"\[[\s\S]*\]")
@@ -174,7 +184,7 @@ class PerplexityService:
                 stats["queried"] += 1
                 stats["extracted"] += len(offers)
                 for offer_data in offers:
-                    if await asyncio.to_thread(self._store, offer_data):
+                    if self._store(offer_data):
                         stats["stored"] += 1
                 await asyncio.sleep(1.5)  # Rate limit
             except Exception:
@@ -190,6 +200,13 @@ class PerplexityService:
                 await embed_pending(self.db, limit=stats["stored"])
             except Exception:
                 logger.warning("Embedding indexation skipped after Perplexity daily", exc_info=True)
+            # Filet de sécurité : Perplexity renvoie déjà la deadline dans son JSON
+            # (cf. _parse_offers) mais peut l'omettre — backfill LLM pour les offres
+            # encore sans expires_at (couvre aussi les lignes Perplexity historiques).
+            try:
+                await extract_pending_deadlines(self.db, limit=stats["stored"])
+            except Exception:
+                logger.warning("Deadline extraction skipped after Perplexity daily", exc_info=True)
         return stats
 
     async def run_on_demand(
@@ -200,13 +217,17 @@ class PerplexityService:
             offers = await self._query(prompt, offer_type, region)
             stored = 0
             for offer_data in offers:
-                if await asyncio.to_thread(self._store, offer_data):
+                if self._store(offer_data):
                     stored += 1
             if stored:
                 try:
                     await embed_pending(self.db, limit=stored)
                 except Exception:
                     logger.warning("Embedding indexation skipped after on-demand", exc_info=True)
+                try:
+                    await extract_pending_deadlines(self.db, limit=stored)
+                except Exception:
+                    logger.warning("Deadline extraction skipped after on-demand", exc_info=True)
             return offers
         except Exception:
             logger.warning("Perplexity on-demand query failed", exc_info=True)
@@ -296,6 +317,9 @@ class PerplexityService:
                 "company": (item.get("company") or "")[:200] or f"Perplexity/{region}",
                 "location": item.get("location") or region,
                 "posted_at": now,
+                # Perplexity a déjà lu la page source — on lui demande la deadline
+                # directement plutôt que de la re-extraire après coup (cf. _SYSTEM_PROMPT).
+                "expires_at": parse_explicit_deadline(item.get("deadline")),
             })
 
         return results
@@ -322,6 +346,11 @@ class PerplexityService:
                 existing.url = offer_data.get("url")
                 existing.company = offer_data.get("company")
                 existing.scraped_at = datetime.now(timezone.utc)
+                # Ne met à jour que si une nouvelle deadline explicite est trouvée —
+                # une requête ultérieure qui ne la redétecte pas ne doit pas effacer
+                # une valeur déjà connue (ex: trouvée par extract_pending_deadlines).
+                if offer_data.get("expires_at"):
+                    existing.expires_at = offer_data["expires_at"]
                 self.db.flush()
                 process_offer(self.db, existing.id)
                 return True
@@ -336,6 +365,7 @@ class PerplexityService:
                 company=offer_data.get("company"),
                 location=offer_data.get("location"),
                 posted_at=offer_data.get("posted_at"),
+                expires_at=offer_data.get("expires_at"),
                 raw_data={},
             )
             self.db.add(offer)
