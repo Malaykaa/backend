@@ -32,6 +32,7 @@ from app.models.chat import MessageRole
 from app.models.user import Profile, User
 from app.models.user_intent import UserIntent
 from app.repositories.chat_repo import ChatRepository
+from app.repositories.feedback_repo import FeedbackRepository
 from app.services.scraped_offer_service import ScrapedOfferService
 from app.services.whatsapp_service import whatsapp_service
 
@@ -53,6 +54,7 @@ class MatchRunner:
         self.settings = get_settings()
         self.offer_svc = ScrapedOfferService(db)
         self.chat_repo = ChatRepository(db)
+        self.feedback_repo = FeedbackRepository(db)
 
     async def run_once(self) -> dict[str, int]:
         """Exécute un cycle complet. Retourne des stats pour le scheduler."""
@@ -126,9 +128,22 @@ class MatchRunner:
         if not self._is_scheduled_time(intent, now):
             return 0
 
+        # On élargit la recherche (x3) car les offres déjà envoyées seront
+        # exclues ensuite — éviter de retomber sous match_top_k après filtrage.
         offers = await self.offer_svc.search_for_matching(
-            intent, limit=self.settings.match_top_k,
+            intent, limit=self.settings.match_top_k * 3,
         )
+        if not offers:
+            self._mark_run(user_id, now)
+            self.db.commit()
+            return 0
+
+        # Exclure les offres déjà poussées à ce user (action=sent) — une
+        # offre n'est envoyée qu'une seule fois, peu importe combien de
+        # runs suivants la retrouvent pertinente pour la même intention.
+        already_sent = self.feedback_repo.get_sent_offer_refs(user_id)
+        offers = [o for o in offers if o.get("offer_ref") not in already_sent]
+        offers = offers[: self.settings.match_top_k]
         if not offers:
             self._mark_run(user_id, now)
             self.db.commit()
@@ -163,6 +178,12 @@ class MatchRunner:
 
         # 2. Notifications in-app pour les offres avec score >= 80%
         self._create_match_notifications(user_id, offers)
+
+        # Marquer ces offres comme envoyées — ne plus jamais les repousser
+        # à ce user, même si elles restent pertinentes lors d'un run futur.
+        self.feedback_repo.mark_sent_batch(
+            user_id, [o["offer_ref"] for o in offers if o.get("offer_ref")]
+        )
 
         # 3. Notif WhatsApp si phone + provider configuré (skip silencieux sinon).
         phone = self._user_phone(user_id)
