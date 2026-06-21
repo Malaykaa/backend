@@ -158,7 +158,7 @@ class ScrapedOfferService:
 
         Retourne les offres triées par score décroissant.
         """
-        offer_type_filter = _intent_type_to_offer_type(intent.intent_type)
+        offer_type_filter = _intent_type_to_offer_types(intent.intent_type)
         query_text = _build_query_text(intent)
         query_vec = await self._embed_query(query_text)
 
@@ -169,7 +169,7 @@ class ScrapedOfferService:
                 intent=intent,
                 query_vec=query_vec,
                 country=intent.location,
-                offer_type=offer_type_filter,
+                offer_types=offer_type_filter,
                 limit=limit,
             )
             if results:
@@ -182,7 +182,7 @@ class ScrapedOfferService:
             )
         return self._keyword_search(
             intent=intent,
-            offer_type=offer_type_filter,
+            offer_types=offer_type_filter,
             limit=limit,
         )
 
@@ -207,7 +207,7 @@ class ScrapedOfferService:
         intent: "UserIntent",
         query_vec: list[float],
         country: str | None,
-        offer_type: str | None,
+        offer_types: list[str] | None,
         limit: int,
     ) -> list[dict]:
         """Branche pgvector — cosine + scoring profil + filtre seuil minimum.
@@ -219,7 +219,7 @@ class ScrapedOfferService:
         candidates = self.repo.search_by_embedding(
             query_vec=query_vec,
             country=country,
-            offer_type=offer_type,
+            offer_types=offer_types,
             limit=limit * 2,
         )
 
@@ -243,7 +243,7 @@ class ScrapedOfferService:
         self,
         *,
         intent: "UserIntent",
-        offer_type: str | None,
+        offer_types: list[str] | None,
         limit: int,
     ) -> list[dict]:
         """Branche ILIKE — fallback. Préserve le comportement historique."""
@@ -258,7 +258,7 @@ class ScrapedOfferService:
         offers = self.repo.search_by_keywords(
             terms=search_terms,
             country=intent.location,
-            offer_type=offer_type,
+            offer_types=offer_types,
             limit=limit,
         )
 
@@ -297,17 +297,28 @@ def _build_query_text(intent: "UserIntent") -> str:
     return "\n".join(parts).strip()
 
 
-def _intent_type_to_offer_type(intent_type: str | None) -> str | None:
-    """Mappe intent_type normalisé → offer_type ScrapedOffer."""
-    mapping = {
-        "stage":           "job",           # internship ≈ job dans scraped_offers
-        "emploi":          "job",
-        "bourse":          "scholarship",
-        "financement":     "grant",
-        "appel_offre":     "call_for_applications",
-        "formation":       "formation",
-        "entrepreneuriat": "opportunity",
-        "partenariat":     "partnership",
+def _intent_type_to_offer_types(intent_type: str | None) -> list[str] | None:
+    """Mappe intent_type normalisé (IntentExtractorService.VALID_INTENT_TYPES)
+    → liste d'offer_type ScrapedOffer pertinents.
+
+    "reconversion" et "autre" étaient absents de ce mapping : intent_type
+    retournait None → aucun filtre de type appliqué → la recherche mélangeait
+    bourses, partenariats, ressources... avec les offres réellement pertinentes.
+    "reconversion" (changement de métier) couvre job + formation + opportunity,
+    comme "career" dans _INTENT_OFFER_TYPES (même logique, vocabulaire différent
+    car intent_extractor utilise sa propre taxonomie). "autre" reste sans
+    filtre : par définition aucun type ne lui correspond clairement.
+    """
+    mapping: dict[str, list[str]] = {
+        "stage":           ["job"],           # internship ≈ job dans scraped_offers
+        "emploi":          ["job"],
+        "bourse":          ["scholarship"],
+        "financement":     ["grant"],
+        "appel_offre":     ["call_for_applications"],
+        "formation":       ["formation"],
+        "reconversion":    ["job", "formation", "opportunity"],
+        "entrepreneuriat": ["opportunity"],
+        "partenariat":     ["partnership"],
     }
     return mapping.get(intent_type or "", None)
 
