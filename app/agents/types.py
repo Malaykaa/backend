@@ -19,6 +19,8 @@ class GoalType(StrEnum):
     TENDER      = "tender"
     STUDY_GRANT = "study_grant"
     CAREER      = "career"
+    ORIENTATION = "orientation"
+    COURSEWORK  = "coursework"
     DOCUMENT    = "document"
     FREE        = "free"
     WORKFLOW    = "workflow"  # agent_id synthétique pour les réponses multi-étapes

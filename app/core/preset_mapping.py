@@ -19,7 +19,8 @@ PRESET_TO_GOAL_TYPE: dict[str, GoalType] = {
     "appel_offres":          GoalType.tender,
     "missions_freelance":    GoalType.freelance,
     "appels_projet":         GoalType.study_grant,
-    "orientation_carriere":  GoalType.career,
+    "orientation_carriere":  GoalType.orientation,
+    "soutien_scolaire":      GoalType.coursework,
 
     # ── Mapping direct des noms GoalType (compat frontend qui envoyait le nom) ──
     "career":      GoalType.career,
@@ -29,6 +30,8 @@ PRESET_TO_GOAL_TYPE: dict[str, GoalType] = {
     "tender":       GoalType.tender,
     "freelance":    GoalType.freelance,
     "study_grant":  GoalType.study_grant,
+    "orientation":  GoalType.orientation,
+    "coursework":   GoalType.coursework,
     "professional": GoalType.career,
 
     # ── Legacy topics (données existantes en DB) ───────────────────────────
@@ -66,6 +69,7 @@ PRESET_LABELS: dict[str, str] = {
     "missions_freelance":     "Missions Freelances",
     "appels_projet":          "Appels à Projet / Candidature",
     "orientation_carriere":   "Orientation de Carrière",
+    "soutien_scolaire":       "Suivi Scolaire / Cours",
     # Legacy topics
     "topic1":  "Développer une Nouvelle Compétence",
     "topic2":  "Booster ma Carrière",
@@ -99,6 +103,8 @@ _GOAL_TYPE_SOURCE: dict[GoalType, str] = {
     GoalType.tender:      "Appels d'offres",
     GoalType.study_grant: "Appels à candidature",
     GoalType.freelance:   "Freelance",
+    GoalType.orientation: "Orientation",
+    GoalType.coursework:  "Suivi scolaire",
 }
 
 
