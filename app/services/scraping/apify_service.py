@@ -28,7 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.scraped_offer import ScrapedOffer, ScrapedOfferType
-from app.services.scraping.pipeline import embed_pending, process_offer
+from app.services.scraping.pipeline import embed_pending, extract_pending_deadlines, process_offer
 
 logger = logging.getLogger(__name__)
 
@@ -385,7 +385,6 @@ class ApifyService:
             def _run_sync() -> tuple[list, int]:
                 run = client.actor(actor_id).call(
                     run_input=input_data,
-                    timeout_secs=300,
                     memory_mbytes=memory_mbytes,  # option run, pas input actor
                 )
                 dataset_id = run.get("defaultDatasetId") if run else None
@@ -406,7 +405,7 @@ class ApifyService:
                 expires = normalized.get("expires_at")
                 if expires and isinstance(expires, datetime) and expires < now:
                     continue
-                if await asyncio.to_thread(self._upsert, normalized):
+                if self._upsert(normalized):
                     stats["stored"] += 1
 
             if stats["stored"]:
@@ -414,6 +413,10 @@ class ApifyService:
                     await embed_pending(self.db, limit=stats["stored"])
                 except Exception:
                     logger.warning("Embedding indexation skipped after %s", actor_id, exc_info=True)
+                try:
+                    await extract_pending_deadlines(self.db, limit=stats["stored"])
+                except Exception:
+                    logger.warning("Deadline extraction skipped after %s", actor_id, exc_info=True)
 
         except Exception:
             logger.warning("Apify actor %s failed", actor_id, exc_info=True)

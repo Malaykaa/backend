@@ -7,14 +7,17 @@ Porté de post-scrape-pipeline.service.ts (NestJS).
 
 from __future__ import annotations
 
-import asyncio
+import json
 import logging
 import re
 import unicodedata
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.llm import get_llm_provider
+from app.llm.base import LLMProvider
 from app.models.scraped_offer import ScrapedOffer, ScrapedOfferType
 from app.services.embedding_service import get_embedding_service
 
@@ -187,7 +190,7 @@ async def embed_pending(
     )
     if limit is not None:
         stmt = stmt.limit(limit)
-    offers = await asyncio.to_thread(lambda: list(db.execute(stmt).scalars().all()))
+    offers = list(db.execute(stmt).scalars().all())
     if not offers:
         return 0
 
@@ -200,10 +203,136 @@ async def embed_pending(
             continue
         offer.embedding = vec
         indexed += 1
-    await asyncio.to_thread(db.flush)
+    db.flush()
     if indexed:
         logger.info(
             "[Embeddings] indexed %d/%d offers (limit=%s)",
             indexed, len(offers), limit,
         )
     return indexed
+
+
+# ── Extraction de deadline (LLM) ─────────────────────────────────────────────
+# Les scrapers ne remplissent quasiment jamais expires_at — la plupart des
+# sources (LinkedIn, Google Jobs, Facebook, crawler web) n'exposent pas de
+# champ de date limite structuré. Pour les types où une deadline explicite
+# est typiquement annoncée dans le texte (bourse, financement, appel à
+# candidature), on tente une extraction ciblée via LLM plutôt que de
+# dépendre uniquement de la fenêtre de fraîcheur scraped_at.
+
+_DEADLINE_PRONE_TYPES = (
+    ScrapedOfferType.scholarship,
+    ScrapedOfferType.grant,
+    ScrapedOfferType.call_for_applications,
+)
+
+_DEADLINE_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)```", re.DOTALL)
+
+_DEADLINE_SYSTEM_PROMPT = """\
+Tu extrais une date limite de candidature explicite d'une annonce \
+(bourse, financement, appel à candidature).
+
+Réponds UNIQUEMENT avec un JSON, sans aucun texte autour :
+{{"deadline": "AAAA-MM-JJ"}} si une date limite précise est explicitement \
+écrite dans le texte (jour/mois/année ou équivalent non ambigu).
+{{"deadline": null}} si aucune date n'est mentionnée, si elle est vague \
+("bientôt", "ouvert en continu", "prochainement"), ou si elle est déjà \
+passée par rapport à aujourd'hui ({today}).
+
+Ne déduis et n'estime JAMAIS une date approximative — uniquement si elle \
+est écrite explicitement dans le texte fourni.
+"""
+
+
+def _strip_deadline_fences(text: str) -> str:
+    m = _DEADLINE_FENCE_RE.search(text)
+    return m.group(1).strip() if m else text.strip()
+
+
+def parse_explicit_deadline(value: str | None) -> datetime | None:
+    """Parse + valide une date limite explicite (format ISO ou proche).
+
+    Garde-fou anti-hallucination commun à toutes les sources de deadline :
+    rejette une valeur vide, un format invalide, une date déjà passée, ou
+    une date déraisonnablement lointaine (> 2 ans).
+
+    Utilisé à la fois par l'extraction LLM post-scrape (_extract_deadline,
+    ci-dessous) et par PerplexityService, qui peut renvoyer une deadline
+    directement dans son JSON de recherche (le modèle a déjà lu la page
+    source — pas besoin d'un second appel LLM pour la retrouver).
+    """
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).strip())
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+    now = datetime.now(timezone.utc)
+    if parsed <= now or parsed > now + timedelta(days=730):
+        return None
+    return parsed
+
+
+async def _extract_deadline(llm: LLMProvider, offer: ScrapedOffer) -> datetime | None:
+    """Extrait une deadline explicite depuis titre+description via LLM.
+
+    Retourne None si absente, ambiguë, déjà passée ou en cas d'échec
+    LLM/parsing — l'appelant laisse alors expires_at à NULL (fallback sur
+    la fenêtre de fraîcheur scraped_at par type, cf. _freshness_filter).
+    """
+    text = f"{offer.title}\n{(offer.description or '')[:1500]}"
+    today = datetime.now(timezone.utc).date().isoformat()
+    messages = [
+        {"role": "system", "content": _DEADLINE_SYSTEM_PROMPT.format(today=today)},
+        {"role": "user", "content": text},
+    ]
+    try:
+        raw = await llm.complete(messages, temperature=0.0, max_tokens=40)
+        data = json.loads(_strip_deadline_fences(raw))
+        deadline_str = data.get("deadline")
+    except Exception:
+        return None
+    return parse_explicit_deadline(deadline_str)
+
+
+async def extract_pending_deadlines(db: Session, *, limit: int | None = None) -> int:
+    """Tente d'extraire une deadline explicite pour les offres à risque
+    (bourse/financement/appel à candidature) dont expires_at est encore NULL.
+
+    Appelé en fin de run_actor() après embed_pending(), même pattern :
+    batch async post-upsert, no-op silencieux si rien à traiter.
+    """
+    llm = get_llm_provider()
+
+    stmt = (
+        select(ScrapedOffer)
+        .where(
+            ScrapedOffer.is_active.is_(True),
+            ScrapedOffer.expires_at.is_(None),
+            ScrapedOffer.offer_type.in_(_DEADLINE_PRONE_TYPES),
+            ScrapedOffer.description.is_not(None),
+        )
+        .order_by(ScrapedOffer.scraped_at.desc())
+    )
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    offers = list(db.execute(stmt).scalars().all())
+    if not offers:
+        return 0
+
+    found = 0
+    for offer in offers:
+        deadline = await _extract_deadline(llm, offer)
+        if deadline is not None:
+            offer.expires_at = deadline
+            found += 1
+    db.flush()
+    if found:
+        logger.info(
+            "[Deadlines] extracted %d/%d explicit deadlines (limit=%s)",
+            found, len(offers), limit,
+        )
+    return found
