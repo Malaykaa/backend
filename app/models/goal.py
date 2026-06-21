@@ -17,6 +17,8 @@ class GoalType(str, enum.Enum):
     study_grant = "study_grant"
     career = "career"
     freelance = "freelance"
+    orientation = "orientation"
+    coursework = "coursework"
 
 
 class GoalStatus(str, enum.Enum):

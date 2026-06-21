@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import Row, select, func, or_
+from sqlalchemy import Row, select, func, or_, case, extract
 from sqlalchemy.orm import Session
 
 from app.models.scraped_offer import ScrapedOffer, ScrapedOfferType
@@ -22,6 +22,47 @@ _INTENT_OFFER_TYPES: dict[str, list[ScrapedOfferType]] = {
 }
 
 
+def _safe_offer_type(value: str) -> ScrapedOfferType | None:
+    """Convertit une string en ScrapedOfferType, None si valeur inconnue."""
+    try:
+        return ScrapedOfferType(value)
+    except ValueError:
+        return None
+
+# ── Fraîcheur dynamique par type d'offre ─────────────────────────────────────
+# expires_at n'est quasiment jamais rempli par les scrapers (seul Indeed essaie,
+# rarement avec succès) — la fenêtre de fraîcheur scraped_at était donc le seul
+# vrai garde-fou contre les offres expirées. Une fenêtre unique de 60 jours est
+# bien trop longue pour des bourses/financements/appels à candidature dont la
+# deadline réelle tombe souvent sous 3 semaines. Différenciée par type :
+# court pour les offres à deadline serrée, plus large pour emploi/formation.
+_OFFER_TYPE_MAX_AGE_DAYS: dict[ScrapedOfferType, int] = {
+    ScrapedOfferType.scholarship:           21,
+    ScrapedOfferType.grant:                 21,
+    ScrapedOfferType.call_for_applications: 21,
+    ScrapedOfferType.job:                   45,
+    ScrapedOfferType.opportunity:           45,
+    ScrapedOfferType.partnership:           45,
+    ScrapedOfferType.formation:             60,
+    ScrapedOfferType.resource:              60,
+}
+_DEFAULT_MAX_AGE_DAYS = 60
+
+
+def _freshness_filter():
+    """Filtre SQL : âge réel (now() - scraped_at) en jours <= seuil du type de la ligne.
+
+    Évalué par ligne via CASE Postgres — fonctionne aussi bien pour une requête
+    multi-types (search_for_agent) qu'un filtre sur un seul type ou aucun filtre.
+    """
+    max_age_case = case(
+        *[(ScrapedOffer.offer_type == ot, days) for ot, days in _OFFER_TYPE_MAX_AGE_DAYS.items()],
+        else_=_DEFAULT_MAX_AGE_DAYS,
+    )
+    age_in_days = extract("epoch", func.now() - ScrapedOffer.scraped_at) / 86400.0
+    return age_in_days <= max_age_case
+
+
 class ScrapedOfferRepository(BaseRepository[ScrapedOffer]):
     def __init__(self, db: Session) -> None:
         super().__init__(ScrapedOffer, db)
@@ -32,25 +73,23 @@ class ScrapedOfferRepository(BaseRepository[ScrapedOffer]):
         keywords: list[str] | None = None,
         country: str | None = None,
         limit: int = 5,
-        max_age_days: int = 30,
     ) -> list[ScrapedOffer]:
         """Recherche les offres pertinentes pour un agent donné.
 
-        Filtrage : type d'offre (via intent), activité, fraîcheur, localisation.
+        Filtrage : type d'offre (via intent), activité, fraîcheur (dynamique
+        par type, cf. _freshness_filter), localisation.
         Tri : quality_score DESC, scraped_at DESC.
         """
         offer_types = _INTENT_OFFER_TYPES.get(intent)
         if not offer_types:
             return []
 
-        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
-
         stmt = (
             select(ScrapedOffer)
             .where(
                 ScrapedOffer.is_active.is_(True),
                 ScrapedOffer.offer_type.in_(offer_types),
-                ScrapedOffer.scraped_at >= cutoff,
+                _freshness_filter(),
                 # Exclure les offres expirées
                 or_(
                     ScrapedOffer.expires_at.is_(None),
@@ -97,33 +136,29 @@ class ScrapedOfferRepository(BaseRepository[ScrapedOffer]):
         self,
         terms: list[str],
         country: str | None = None,
-        offer_type: str | None = None,
+        offer_types: list[str] | None = None,
         limit: int = 20,
-        max_age_days: int = 60,
     ) -> list[ScrapedOffer]:
         """Recherche par mots-clés libres pour le matching d'intentions extraites.
 
         Différent de search_for_agent : pas de mapping par intent, recherche
         full-text sur title + description via ILIKE PostgreSQL.
+        Fraîcheur dynamique par type (cf. _freshness_filter).
         """
-        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
-
         stmt = select(ScrapedOffer).where(
             ScrapedOffer.is_active.is_(True),
-            ScrapedOffer.scraped_at >= cutoff,
+            _freshness_filter(),
             or_(
                 ScrapedOffer.expires_at.is_(None),
                 ScrapedOffer.expires_at > datetime.now(timezone.utc),
             ),
         )
 
-        # Filtre par type d'offre si fourni
-        if offer_type:
-            try:
-                ot = ScrapedOfferType(offer_type)
-                stmt = stmt.where(ScrapedOffer.offer_type == ot)
-            except ValueError:
-                pass  # type inconnu → ignorer le filtre
+        # Filtre par type(s) d'offre si fourni
+        if offer_types:
+            valid_types = [t for t in (_safe_offer_type(ot) for ot in offer_types) if t]
+            if valid_types:
+                stmt = stmt.where(ScrapedOffer.offer_type.in_(valid_types))
 
         # Filtre full-text par termes (OR entre termes, AND implicite via chaque filtre)
         if terms:
@@ -164,9 +199,8 @@ class ScrapedOfferRepository(BaseRepository[ScrapedOffer]):
         self,
         query_vec: list[float],
         country: str | None = None,
-        offer_type: str | None = None,
+        offer_types: list[str] | None = None,
         limit: int = 20,
-        max_age_days: int = 60,
     ) -> list[tuple[ScrapedOffer, float]]:
         """Recherche sémantique via pgvector — cosine distance.
 
@@ -174,8 +208,9 @@ class ScrapedOfferRepository(BaseRepository[ScrapedOffer]):
         croissante (= similarité décroissante). Filtre uniquement les offres
         qui ont un embedding non-NULL (les autres ne peuvent pas être ranked
         par similarité ; le caller utilise alors search_by_keywords en
-        fallback). Filtre aussi sur is_active, fraîcheur, expires_at, country,
-        offer_type — symétrique à search_by_keywords.
+        fallback). Filtre aussi sur is_active, fraîcheur (dynamique par type,
+        cf. _freshness_filter), expires_at, country, offer_types — symétrique
+        à search_by_keywords.
 
         L'index HNSW (vector_cosine_ops) sur scraped_offers.embedding est
         utilisé automatiquement par PostgreSQL pour le tri.
@@ -183,25 +218,22 @@ class ScrapedOfferRepository(BaseRepository[ScrapedOffer]):
         if not query_vec:
             return []
 
-        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
         distance = ScrapedOffer.embedding.cosine_distance(query_vec).label("distance")
 
         stmt = select(ScrapedOffer, distance).where(
             ScrapedOffer.embedding.is_not(None),
             ScrapedOffer.is_active.is_(True),
-            ScrapedOffer.scraped_at >= cutoff,
+            _freshness_filter(),
             or_(
                 ScrapedOffer.expires_at.is_(None),
                 ScrapedOffer.expires_at > datetime.now(timezone.utc),
             ),
         )
 
-        if offer_type:
-            try:
-                ot = ScrapedOfferType(offer_type)
-                stmt = stmt.where(ScrapedOffer.offer_type == ot)
-            except ValueError:
-                pass
+        if offer_types:
+            valid_types = [t for t in (_safe_offer_type(ot) for ot in offer_types) if t]
+            if valid_types:
+                stmt = stmt.where(ScrapedOffer.offer_type.in_(valid_types))
 
         if country:
             c = country.lower()
