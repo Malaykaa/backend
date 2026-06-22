@@ -19,10 +19,9 @@ from app.schemas.auth import (
     LoginPhoneRequest,
     LoginRequest,
     MeResponse,
+    RegisterPhoneRequest,
     RegisterRequest,
     ResetPasswordRequest,
-    SendOtpRequest,
-    VerifyOtpRegisterRequest,
 )
 from app.services.auth_service import AuthService
 
@@ -99,23 +98,29 @@ def login(
     return _auth_result(user, access)
 
 
-# â”€â”€ Phone OTP auth (flux principal) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â”€â”€ Phone auth (flux principal) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
-@router.post("/send-otp")
-@limiter.limit("3/15minute")
-async def send_otp(
+@router.post("/register-phone", response_model=AuthResultResponse, status_code=201)
+@limiter.limit("5/15minute")
+def register_phone(
     request: Request,
-    body: SendOtpRequest,
-    background_tasks: BackgroundTasks,
+    body: RegisterPhoneRequest,
+    response: Response,
+    db: Annotated[Session, Depends(get_db)],
 ):
-    """Envoie un OTP par WhatsApp â€” l'envoi WhatsApp est diffÃ©rÃ© en background
-    pour rÃ©pondre 200 immÃ©diatement mÃªme si le provider rame. Le code OTP
-    est stockÃ© dans Redis avant le scheduling, donc /verify-otp reste valide.
-    """
-    from app.services.auth_service import AuthService  # noqa: PLC0415
+    """Inscription par numéro WhatsApp — sans OTP.
 
-    return await AuthService.send_otp_static(body.phone, background_tasks)
+    Le numéro est auto-déclaré : on incite l'utilisateur à renseigner son vrai
+    numéro WhatsApp via la promesse "recevoir les opportunités" (cf. copie
+    onboarding côté frontend), plutôt que de dépendre de la fiabilité de
+    livraison WhatsApp pour vérifier sa possession à l'inscription.
+    """
+    service = AuthService(db)
+    user, access, refresh = service.register_phone(body)
+    db.commit()
+    _set_auth_cookies(response, access, refresh)
+    return _auth_result(user, access)
 
 
 @router.post("/check-phone")
@@ -164,22 +169,6 @@ def reset_password(
     service.reset_password(body.phone, body.code, body.new_password)
     db.commit()
     return {"ok": True}
-
-
-@router.post("/verify-otp-register", response_model=AuthResultResponse, status_code=201)
-@limiter.limit("10/minute")
-def verify_otp_register(
-    request: Request,
-    body: VerifyOtpRegisterRequest,
-    response: Response,
-    db: Annotated[Session, Depends(get_db)],
-):
-    """VÃ©rifie l'OTP et crÃ©e le compte utilisateur."""
-    service = AuthService(db)
-    user, access, refresh = service.verify_otp_register(body)
-    db.commit()
-    _set_auth_cookies(response, access, refresh)
-    return _auth_result(user, access)
 
 
 @router.post("/login-phone", response_model=AuthResultResponse)
