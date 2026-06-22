@@ -47,29 +47,17 @@ class LoginRequest(BaseModel):
 # â”€â”€ RequÃªtes â€” phone OTP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
-class SendOtpRequest(BaseModel):
-    """Envoi d'un OTP WhatsApp."""
+class RegisterPhoneRequest(BaseModel):
+    """Inscription par numéro WhatsApp — sans vérification OTP.
+
+    Le numéro est auto-déclaré : l'utilisateur le renseigne pour recevoir les
+    opportunités sur WhatsApp, ce qui l'incite naturellement à indiquer son
+    vrai numéro (aucune vérification de propriété n'est effectuée).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     phone: str = Field(min_length=8, max_length=30)
-
-    @field_validator("phone")
-    @classmethod
-    def phone_must_contain_digits(cls, v: str) -> str:
-        cleaned = re.sub(r"\D", "", v)
-        if len(cleaned) < 8:
-            raise ValueError("NumÃ©ro de tÃ©lÃ©phone invalide (min 8 chiffres).")
-        return v
-
-
-class VerifyOtpRegisterRequest(BaseModel):
-    """Vérification OTP + création de compte."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    phone: str = Field(min_length=8, max_length=30)
-    code: str = Field(min_length=6, max_length=6)
     password: str = Field(min_length=8, max_length=128)
 
     # Données profil optionnelles (récoltées pendant l'onboarding)
@@ -80,6 +68,14 @@ class VerifyOtpRegisterRequest(BaseModel):
     country: str | None = Field(default=None, max_length=100)
     primary_role: PrimaryRole | None = None
 
+    @field_validator("phone")
+    @classmethod
+    def phone_must_contain_digits(cls, v: str) -> str:
+        cleaned = re.sub(r"\D", "", v)
+        if len(cleaned) < 8:
+            raise ValueError("NumÃ©ro de tÃ©lÃ©phone invalide (min 8 chiffres).")
+        return v
+
     @field_validator("gender", mode="before")
     @classmethod
     def normalize_gender(cls, v: str | None) -> str | None:
@@ -89,13 +85,6 @@ class VerifyOtpRegisterRequest(BaseModel):
     @classmethod
     def normalize_primary_role(cls, v: str | None) -> str | None:
         return {"jobseeker": "job_seeker"}.get(v, v) if v is not None else v
-
-    @field_validator("code")
-    @classmethod
-    def code_must_be_digits(cls, v: str) -> str:
-        if not re.fullmatch(r"\d{6}", v):
-            raise ValueError("Le code doit contenir exactement 6 chiffres.")
-        return v
 
     @field_validator("birth_year")
     @classmethod
