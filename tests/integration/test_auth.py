@@ -1,4 +1,4 @@
-"""Tests d'intégration auth — flux OTP complet (send → verify → me)."""
+"""Tests d'intégration auth — flux téléphone sans OTP (register-phone → me)."""
 
 from __future__ import annotations
 
@@ -10,39 +10,22 @@ from app.core.cookies import ACCESS_COOKIE
 
 
 @pytest.mark.asyncio
-async def test_send_otp_returns_ok(client):
-    """POST /auth/send-otp avec un numéro valide → {ok: true}.
-
-    En env local sans OneMessage/Twilio configurés, le service log juste l'OTP.
-    On valide ici la couche HTTP + validation Pydantic.
-    """
-    resp = await client.post("/auth/send-otp", json={"phone": "+221770000001"})
-    assert resp.status_code == 200
-    assert resp.json() == {"ok": True}
-
-
-@pytest.mark.asyncio
-async def test_send_otp_invalid_phone_returns_422(client):
-    resp = await client.post("/auth/send-otp", json={"phone": "123"})
+async def test_register_phone_invalid_phone_returns_422(client):
+    resp = await client.post(
+        "/auth/register-phone", json={"phone": "123", "password": "securepass8"}
+    )
     assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
-async def test_register_via_otp_then_me(client):
-    """OTP_MOCK_ACCEPT_ANY=true → tout code à 6 chiffres est accepté.
-
-    Flux : send-otp → verify-otp-register (création compte) → /auth/me (cookie session).
-    """
+async def test_register_phone_then_me(client):
+    """Flux : register-phone (création compte directe, sans OTP) → /auth/me (cookie session)."""
     phone = f"+22177{uuid.uuid4().int % 10_000_000:07d}"
 
-    send = await client.post("/auth/send-otp", json={"phone": phone})
-    assert send.status_code == 200
-
     register = await client.post(
-        "/auth/verify-otp-register",
+        "/auth/register-phone",
         json={
             "phone": phone,
-            "code": "123456",
             "password": "securepass8",
             "first_name": "Aïcha",
             "country": "Sénégal",
@@ -58,6 +41,21 @@ async def test_register_via_otp_then_me(client):
     me = await client.get("/auth/me")
     assert me.status_code == 200
     assert me.json()["user"]["id"] == body["user"]["id"]
+
+
+@pytest.mark.asyncio
+async def test_register_phone_duplicate_returns_409(client):
+    phone = f"+22177{uuid.uuid4().int % 10_000_000:07d}"
+
+    first = await client.post(
+        "/auth/register-phone", json={"phone": phone, "password": "securepass8"}
+    )
+    assert first.status_code == 201
+
+    second = await client.post(
+        "/auth/register-phone", json={"phone": phone, "password": "anotherpass8"}
+    )
+    assert second.status_code == 409
 
 
 @pytest.mark.asyncio

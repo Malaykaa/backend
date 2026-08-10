@@ -34,6 +34,7 @@ class ChatThread(Base):
     compressed_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary_up_to: Mapped[int | None] = mapped_column(Integer, nullable=True)
     message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )

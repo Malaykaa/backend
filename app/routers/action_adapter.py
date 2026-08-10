@@ -7,6 +7,8 @@ Deux endpoints :
 Réutilise le pipeline Orchestrator → ExecutionEngine existant.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import uuid as _uuid

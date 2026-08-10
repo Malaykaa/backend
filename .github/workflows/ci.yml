@@ -69,6 +69,8 @@ jobs:
             BACKEND_IMAGE="${IMAGE}" IMAGE_TAG=develop \
               docker compose -f docker-compose.yml -f docker-compose.staging.yml \
               up -d --no-build backend-staging
+            docker compose -f docker-compose.yml -f docker-compose.staging.yml \
+              exec -T backend-staging alembic upgrade head
             docker image prune -f
 
   deploy-production:
@@ -93,4 +95,5 @@ jobs:
             docker pull "${IMAGE}:latest"
             BACKEND_IMAGE="${IMAGE}" IMAGE_TAG=latest \
               docker compose up -d --no-build backend
+            docker compose exec -T backend alembic upgrade head
             docker image prune -f

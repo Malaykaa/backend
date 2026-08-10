@@ -1,7 +1,7 @@
 """Tests unitaires pour l'authentification (mock des repos, pas de DB)."""
 
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -192,49 +192,22 @@ class TestRefresh:
         assert resp.status_code == 401
 
 
-# ── POST /auth/send-otp ──────────────────────────────────
+# ── POST /auth/register-phone ────────────────────────────
 
 
-class TestSendOtp:
-    def test_send_otp_success(self, client: TestClient):
-        with patch("app.services.auth_service.whatsapp_service") as mock_wa:
-            mock_wa.send_otp = AsyncMock(return_value=None)
-
-            resp = client.post("/auth/send-otp", json={"phone": "+2250700000000"})
-
-        assert resp.status_code == 200
-        assert resp.json()["ok"] is True
-
-    def test_send_otp_invalid_phone(self, client: TestClient):
-        resp = client.post("/auth/send-otp", json={"phone": "123"})
-        assert resp.status_code == 422  # validation Pydantic
-
-
-# ── POST /auth/verify-otp-register ───────────────────────
-
-
-class TestVerifyOtpRegister:
-    def test_verify_otp_register_success(self, client: TestClient):
+class TestRegisterPhone:
+    def test_register_phone_success(self, client: TestClient):
         user = _make_user("2250700000000@malaykaa.app", "Secure1!pass", phone="2250700000000")
 
-        with (
-            patch("app.services.auth_service.UserRepository") as MockRepo,
-            patch("app.services.auth_service.otp_service") as mock_otp,
-            patch("app.services.auth_service.whatsapp_service") as mock_wa,
-        ):
+        with patch("app.services.auth_service.UserRepository") as MockRepo:
             mock_repo = MockRepo.return_value
             mock_repo.get_by_phone.return_value = None
-            mock_repo.get_by_email.return_value = None
             mock_repo.create_with_profile.return_value = user
 
-            mock_wa.mock_accept_any = False
-            mock_wa.has_twilio = False  # dev mode — accept any 6-digit code
-
             resp = client.post(
-                "/auth/verify-otp-register",
+                "/auth/register-phone",
                 json={
                     "phone": "+2250700000000",
-                    "code": "123456",
                     "password": "Secure1!pass",
                     "first_name": "Amadou",
                     "last_name": "Koné",
@@ -247,28 +220,37 @@ class TestVerifyOtpRegister:
         assert "accessToken" in data
         assert ACCESS_COOKIE in resp.cookies
 
-    def test_verify_otp_register_invalid_code(self, client: TestClient):
+    def test_register_phone_invalid_phone(self, client: TestClient):
         resp = client.post(
-            "/auth/verify-otp-register",
-            json={
-                "phone": "+2250700000000",
-                "code": "abc",  # pas 6 chiffres
-                "password": "Secure1!pass",
-            },
+            "/auth/register-phone",
+            json={"phone": "123", "password": "Secure1!pass"},
         )
         assert resp.status_code == 422
 
-    def test_verify_otp_register_underage(self, client: TestClient):
+    def test_register_phone_underage(self, client: TestClient):
         resp = client.post(
-            "/auth/verify-otp-register",
+            "/auth/register-phone",
             json={
                 "phone": "+2250700000000",
-                "code": "123456",
                 "password": "Secure1!pass",
                 "birth_year": 2020,  # trop jeune
             },
         )
         assert resp.status_code == 422
+
+    def test_register_phone_already_used(self, client: TestClient):
+        user = _make_user("2250700000000@malaykaa.app", "Secure1!pass", phone="2250700000000")
+
+        with patch("app.services.auth_service.UserRepository") as MockRepo:
+            mock_repo = MockRepo.return_value
+            mock_repo.get_by_phone.return_value = user  # déjà existant
+
+            resp = client.post(
+                "/auth/register-phone",
+                json={"phone": "+2250700000000", "password": "Secure1!pass"},
+            )
+
+        assert resp.status_code == 409
 
 
 # ── POST /auth/login-phone ───────────────────────────────
