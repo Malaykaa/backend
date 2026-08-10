@@ -50,17 +50,7 @@ class AdminOfferDetail(AdminOfferItem):
     description: str | None; external_id: str; normalized_title: str | None; salary: str | None
 
 class AdminOfferUpdate(BaseModel):
-    is_active: bool | None = None
-    quality_score: float | None = None
-    title: str | None = None
-    offer_type: str | None = None
-    description: str | None = None
-    url: str | None = None
-    company: str | None = None
-    location: str | None = None
-    salary: str | None = None
-    posted_at: datetime | None = None
-    expires_at: datetime | None = None
+    is_active: bool | None = None; quality_score: float | None = None
 
 class AdminGoalItem(BaseModel):
     id: str; user_id: str; user_email: str | None; type: str; status: str
@@ -240,4 +230,71 @@ class AdminDeliverableItem(BaseModel):
     content_preview: str
     agent_id: str | None
     created_at: datetime
+
+
+class AdminStructureMember(BaseModel):
+    user_id: str
+    first_name: str | None
+    last_name: str | None
+    email: str | None
+    phone: str | None
+    role: str
+    joined_at: datetime
+
+
+class AdminStructureClassroom(BaseModel):
+    id: str
+    name: str
+    invite_code: str
+    teachers_count: int
+    students_count: int
+    pending_members_count: int
+    courses_count: int
+    created_at: datetime
+
+
+class AdminStructureInvitation(BaseModel):
+    id: str
+    first_name: str
+    last_name: str
+    contact: str | None
+    status: str
+    created_at: datetime
+    expires_at: datetime
+
+
+class AdminStructureItem(BaseModel):
+    """Demande de creation de structure (Malayka Institution) — file de validation."""
+    id: str
+    name: str
+    country: str | None
+    status: str
+    structure_type: str | None
+    address: str | None
+    email: str | None
+    requested_by_email: str | None
+    created_at: datetime
+    members_count: int
+
+
+class AdminStructureDetail(AdminStructureItem):
+    structure_type_other: str | None
+    members: list[AdminStructureMember] = []
+    classrooms: list[AdminStructureClassroom] = []
+    invitations: list[AdminStructureInvitation] = []
+    classrooms_count: int
+    students_total: int
+    courses_total: int
+    pending_invitations_count: int
+
+
+class AdminStructureUpdate(BaseModel):
+    status: str | None = None
+
+    @field_validator("status")
+    @classmethod
+    def status_valid(cls, v: str | None) -> str | None:
+        if v is not None and v not in ("pending", "active", "rejected"):
+            raise ValueError("statut invalide")
+        return v
 

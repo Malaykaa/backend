@@ -1,0 +1,279 @@
+"""Schemas Pydantic — Malayka Institution (Structure / Classroom / Invitation)."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, EmailStr, Field, model_validator
+
+StructureTypeLiteral = Literal[
+    "training_center", "independent_trainer", "school", "university", "other"
+]
+
+
+class StructureCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=200)
+    country: str | None = None
+    structure_type: StructureTypeLiteral | None = None
+    structure_type_other: str | None = Field(default=None, max_length=200)
+    address: str | None = Field(default=None, max_length=300)
+    email: EmailStr | None = None
+
+    @model_validator(mode="after")
+    def _other_requires_label(self) -> "StructureCreate":
+        if self.structure_type == "other" and not (self.structure_type_other or "").strip():
+            raise ValueError("Précise le type de structure.")
+        return self
+
+
+class StructureResponse(BaseModel):
+    id: str
+    name: str
+    country: str | None
+    structure_type: str | None = None
+    structure_type_other: str | None = None
+    address: str | None = None
+    email: str | None = None
+    status: str
+    created_at: datetime
+    role: str  # rôle du current_user dans cette structure (super_admin | teacher)
+
+
+class ClassroomCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=200)
+
+
+class ClassroomResponse(BaseModel):
+    id: str
+    structure_id: str
+    name: str
+    invite_code: str
+    created_at: datetime
+
+
+class InvitationCreate(BaseModel):
+    first_name: str = Field(min_length=1, max_length=100)
+    last_name: str = Field(min_length=1, max_length=100)
+    classroom_ids: list[str] = Field(min_length=1)
+    contact: str | None = Field(default=None, max_length=320)
+
+
+class InvitationResponse(BaseModel):
+    id: str
+    structure_id: str
+    first_name: str
+    last_name: str
+    status: str
+    invite_url: str
+    created_at: datetime
+    expires_at: datetime
+
+
+class InvitationPreview(BaseModel):
+    """Aperçu public (non authentifié) — affiché avant connexion/inscription."""
+
+    structure_name: str
+    classroom_names: list[str]
+    first_name: str
+    last_name: str
+    status: str
+
+
+class InvitationAccept(BaseModel):
+    first_name: str = Field(min_length=1, max_length=100)
+    last_name: str = Field(min_length=1, max_length=100)
+
+
+class InvitationAcceptResult(BaseModel):
+    status: str  # "accepted" | "pending_review"
+    structure_name: str
+    classroom_names: list[str]
+
+
+class RosterEntryCreate(BaseModel):
+    first_name: str = Field(min_length=1, max_length=100)
+    last_name: str = Field(min_length=1, max_length=100)
+
+
+class RosterImportRequest(BaseModel):
+    entries: list[RosterEntryCreate] = Field(min_length=1)
+
+
+class RosterEntryResponse(BaseModel):
+    id: str
+    first_name: str
+    last_name: str
+    claimed: bool
+
+
+class ClassroomMembershipResponse(BaseModel):
+    id: str
+    classroom_id: str
+    user_id: str
+    user_email: str | None
+    requested_first_name: str
+    requested_last_name: str
+    status: str
+    created_at: datetime
+
+
+class ClassroomJoinPreview(BaseModel):
+    structure_name: str
+    classroom_name: str
+
+
+class ClassroomJoinAccept(BaseModel):
+    first_name: str = Field(min_length=1, max_length=100)
+    last_name: str = Field(min_length=1, max_length=100)
+
+
+class ClassroomJoinResult(BaseModel):
+    status: str  # "accepted" | "pending_review"
+    classroom_name: str
+
+
+class CourseCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=300)
+    content: str | None = None
+    attachment_id: str | None = None
+    subject: str | None = Field(default=None, max_length=100)
+
+
+class CourseStepResponse(BaseModel):
+    id: str
+    label: str
+    description: str
+    order: int
+
+
+class CourseResponse(BaseModel):
+    id: str
+    classroom_id: str
+    title: str
+    subject: str | None
+    kind: str
+    summary: str
+    explanation: str
+    suggestions: list[dict] | None
+    created_at: datetime
+    steps: list[CourseStepResponse]
+
+
+class CourseListItem(BaseModel):
+    id: str
+    classroom_id: str
+    title: str
+    subject: str | None
+    kind: str
+    summary: str
+    created_at: datetime
+    steps_count: int
+    recipients_count: int
+
+
+class CourseSendRequest(BaseModel):
+    target: str  # "classroom" | "student"
+    student_user_id: str | None = None
+
+
+class CourseSendResult(BaseModel):
+    new_recipients_count: int
+
+
+class StepProgressResponse(BaseModel):
+    step_id: str
+    label: str
+    description: str
+    order: int
+    status: str
+    completed_at: datetime | None
+
+
+class MyCourseProgressResponse(BaseModel):
+    course_id: str
+    title: str
+    explanation: str
+    steps: list[StepProgressResponse]
+
+
+class RecipientProgressResponse(BaseModel):
+    user_id: str
+    user_email: str | None
+    user_name: str | None
+    user_phone: str | None
+    steps: list[StepProgressResponse]
+
+
+class CourseProgressMatrixResponse(BaseModel):
+    course_id: str
+    title: str
+    recipients: list[RecipientProgressResponse]
+
+
+class DashboardCourseItem(BaseModel):
+    course_id: str
+    title: str
+    subject: str | None
+    recipients_count: int
+    completion_pct: int
+
+
+class DashboardStudentItem(BaseModel):
+    user_id: str
+    user_email: str | None
+    courses_count: int
+    steps_done: int
+    steps_total: int
+    completion_pct: int
+
+
+class ClassroomDashboardResponse(BaseModel):
+    courses: list[DashboardCourseItem]
+    students: list[DashboardStudentItem]
+
+
+class StructureDashboardClassroomItem(BaseModel):
+    classroom_id: str
+    name: str
+    students_count: int
+    courses_count: int
+    completion_pct: int
+
+
+class StructureDashboardResponse(BaseModel):
+    classrooms: list[StructureDashboardClassroomItem]
+
+
+class GenerateEvolutionPlansResult(BaseModel):
+    plans_generated: int
+
+
+class ImpactReportClassroomItem(BaseModel):
+    classroom_id: str
+    name: str
+    students_count: int
+    courses_count: int
+    completion_pct: int
+
+
+class ImpactReportSubjectItem(BaseModel):
+    subject: str
+    courses_count: int
+    completion_pct: int
+
+
+class ImpactReportResponse(BaseModel):
+    structure_id: str
+    structure_name: str
+    generated_at: datetime
+    period_since: datetime | None
+    period_until: datetime | None
+    classrooms_count: int
+    teachers_count: int
+    students_count: int
+    courses_count: int
+    evolution_plans_count: int
+    completion_pct: int
+    by_classroom: list[ImpactReportClassroomItem]
+    by_subject: list[ImpactReportSubjectItem]

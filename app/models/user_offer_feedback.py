@@ -25,6 +25,7 @@ class FeedbackAction(str, enum.Enum):
     ignored      = "ignored"       # L'user a explicitement ignoré
     dismissed    = "dismissed"     # L'user a fermé / fait disparaître
     llm_validated = "llm_validated"  # Score calculé par le LLM (pas une action user)
+    sent          = "sent"         # Déjà poussée par MatchRunner (chat/WhatsApp) — pas une action user
 
 
 # Impact de chaque action sur le score final (delta en points)
@@ -35,6 +36,7 @@ FEEDBACK_SCORE_DELTA: dict[FeedbackAction, float] = {
     FeedbackAction.ignored:       -25.0,
     FeedbackAction.dismissed:     -20.0,
     FeedbackAction.llm_validated:   0.0,  # géré via llm_score séparément
+    FeedbackAction.sent:            0.0,  # géré via exclusion dure dans MatchRunner
 }
 
 

@@ -102,7 +102,7 @@ class Settings(BaseSettings):
     match_top_k: int = 5
 
     # URL publique du frontend (liens dans les notifications WhatsApp)
-    frontend_url: str = "http://localhost:5173"
+    frontend_url: str = "http://localhost:5175"
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"

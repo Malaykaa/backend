@@ -16,8 +16,14 @@ from app.models.goal import Goal, GoalStatus, GoalType
 from app.models.scraped_offer import ScrapedOffer
 from app.models.user import Profile, User, UserRole
 from app.models.user_intent import UserIntent
+from app.models.structure import (
+    Classroom, ClassroomCourse, ClassroomMembership, ClassroomTeacher,
+    InvitationStatus, MembershipStatus, Structure, StructureInvitation,
+    StructureMember, StructureMemberRole, StructureStatus,
+)
 from app.schemas.admin import (AdminDeliverableItem,
-    AdminOfferCreate, AdminUserCreate,AdminDocumentItem, AdminGoalItem, AdminIntentItem, AdminMessageItem, AdminOfferDetail, AdminOfferItem, AdminOfferUpdate, AdminPaginated, AdminStats, AdminThreadDetail, AdminThreadItem, AdminUserDetail, AdminUserItem, AdminUserUpdate)
+    AdminOfferCreate, AdminUserCreate, AdminDocumentItem, AdminGoalItem, AdminIntentItem, AdminMessageItem, AdminOfferDetail, AdminOfferItem, AdminOfferUpdate, AdminPaginated, AdminStats, AdminStructureClassroom, AdminStructureDetail, AdminStructureInvitation, AdminStructureItem, AdminStructureMember, AdminStructureUpdate, AdminThreadDetail, AdminThreadItem, AdminUserDetail, AdminUserItem, AdminUserUpdate)
+from app.services import structure_service
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -449,4 +455,179 @@ def list_deliverables(
         ))
 
     return AdminPaginated(items=items, **_pag(total, page, size))
+
+
+# ── Malayka Institution — validation des demandes de structure ──────────────
+
+def _structure_item(s: Structure, requester_email: str | None, members_count: int = 0) -> AdminStructureItem:
+    return AdminStructureItem(
+        id=str(s.id), name=s.name, country=s.country, status=s.status.value,
+        structure_type=s.structure_type.value if s.structure_type else None,
+        address=s.address, email=s.email,
+        requested_by_email=requester_email, created_at=s.created_at,
+        members_count=members_count,
+    )
+
+@router.get("/structures", response_model=AdminPaginated[AdminStructureItem])
+def list_structures(admin: Annotated[User, Depends(get_admin_user)], db: Annotated[Session, Depends(get_db)], page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=100), status: str | None = Query(default="pending")):
+    q_obj = db.query(Structure)
+    if status:
+        try: q_obj = q_obj.filter(Structure.status == StructureStatus(status))
+        except ValueError: pass
+    total = q_obj.count()
+    rows = q_obj.order_by(desc(Structure.created_at)).offset((page-1)*size).limit(size).all()
+
+    items = []
+    for s in rows:
+        requester = (
+            db.query(User)
+            .join(StructureMember, StructureMember.user_id == User.id)
+            .filter(StructureMember.structure_id == s.id, StructureMember.role == StructureMemberRole.super_admin)
+            .first()
+        )
+        mc = db.query(func.count(StructureMember.id)).filter(StructureMember.structure_id == s.id).scalar() or 0
+        items.append(_structure_item(s, requester.email if requester else None, mc))
+    return AdminPaginated(items=items, **_pag(total, page, size))
+
+@router.get("/structures/{structure_id}", response_model=AdminStructureDetail)
+def get_structure(structure_id: UUID, admin: Annotated[User, Depends(get_admin_user)], db: Annotated[Session, Depends(get_db)]):
+    s = db.query(Structure).filter(Structure.id == structure_id).first()
+    if not s:
+        raise HTTPException(404, "Structure non trouvée")
+
+    # Membres de l'équipe (admins + teachers)
+    requester = (
+        db.query(User)
+        .join(StructureMember, StructureMember.user_id == User.id)
+        .filter(StructureMember.structure_id == s.id, StructureMember.role == StructureMemberRole.super_admin)
+        .first()
+    )
+    members_rows = (
+        db.query(StructureMember, User, Profile)
+        .join(User, User.id == StructureMember.user_id)
+        .outerjoin(Profile, Profile.user_id == User.id)
+        .filter(StructureMember.structure_id == s.id)
+        .all()
+    )
+    members = [
+        AdminStructureMember(
+            user_id=str(m.user_id), first_name=p.first_name if p else None,
+            last_name=p.last_name if p else None, email=u.email, phone=u.phone,
+            role=m.role.value, joined_at=m.created_at,
+        )
+        for m, u, p in members_rows
+    ]
+
+    # Classrooms avec stats par salle
+    classroom_rows = (
+        db.query(Classroom)
+        .filter(Classroom.structure_id == s.id)
+        .order_by(Classroom.created_at)
+        .all()
+    )
+    classroom_data: list[AdminStructureClassroom] = []
+    for c in classroom_rows:
+        teachers_count = (
+            db.query(func.count(ClassroomTeacher.id))
+            .filter(ClassroomTeacher.classroom_id == c.id).scalar() or 0
+        )
+        students_count = (
+            db.query(func.count(ClassroomMembership.id))
+            .filter(ClassroomMembership.classroom_id == c.id,
+                    ClassroomMembership.status == MembershipStatus.accepted)
+            .scalar() or 0
+        )
+        pending_count = (
+            db.query(func.count(ClassroomMembership.id))
+            .filter(ClassroomMembership.classroom_id == c.id,
+                    ClassroomMembership.status == MembershipStatus.pending_review)
+            .scalar() or 0
+        )
+        courses_count = (
+            db.query(func.count(ClassroomCourse.id))
+            .filter(ClassroomCourse.classroom_id == c.id).scalar() or 0
+        )
+        classroom_data.append(AdminStructureClassroom(
+            id=str(c.id), name=c.name, invite_code=c.invite_code,
+            teachers_count=teachers_count, students_count=students_count,
+            pending_members_count=pending_count, courses_count=courses_count,
+            created_at=c.created_at,
+        ))
+
+    # Invitations enseignants (20 les plus récentes)
+    invitation_rows = (
+        db.query(StructureInvitation)
+        .filter(StructureInvitation.structure_id == s.id)
+        .order_by(desc(StructureInvitation.created_at))
+        .limit(20)
+        .all()
+    )
+    invitation_data = [
+        AdminStructureInvitation(
+            id=str(inv.id), first_name=inv.first_name, last_name=inv.last_name,
+            contact=inv.contact, status=inv.status.value,
+            created_at=inv.created_at, expires_at=inv.expires_at,
+        )
+        for inv in invitation_rows
+    ]
+
+    students_total = sum(c.students_count for c in classroom_data)
+    courses_total = sum(c.courses_count for c in classroom_data)
+    pending_invitations_count = sum(1 for inv in invitation_data if inv.status == InvitationStatus.pending.value)
+
+    return AdminStructureDetail(
+        id=str(s.id), name=s.name, country=s.country, status=s.status.value,
+        structure_type=s.structure_type.value if s.structure_type else None,
+        structure_type_other=s.structure_type_other,
+        address=s.address, email=s.email,
+        requested_by_email=requester.email if requester else None,
+        created_at=s.created_at, members_count=len(members),
+        members=members, classrooms=classroom_data, invitations=invitation_data,
+        classrooms_count=len(classroom_data),
+        students_total=students_total, courses_total=courses_total,
+        pending_invitations_count=pending_invitations_count,
+    )
+
+@router.patch("/structures/{structure_id}", response_model=AdminStructureItem)
+def update_structure(structure_id: UUID, payload: AdminStructureUpdate, admin: Annotated[User, Depends(get_admin_user)], db: Annotated[Session, Depends(get_db)]):
+    s = db.query(Structure).filter(Structure.id == structure_id).first()
+    if not s:
+        raise HTTPException(404, "Structure non trouvée")
+    if payload.status is not None:
+        s.status = StructureStatus(payload.status)
+    db.commit(); db.refresh(s)
+    requester = (
+        db.query(User)
+        .join(StructureMember, StructureMember.user_id == User.id)
+        .filter(StructureMember.structure_id == s.id, StructureMember.role == StructureMemberRole.super_admin)
+        .first()
+    )
+    mc = db.query(func.count(StructureMember.id)).filter(StructureMember.structure_id == s.id).scalar() or 0
+    logger.info("admin_structure_updated", structure_id=str(structure_id), by=str(admin.id))
+    return _structure_item(s, requester.email if requester else None, mc)
+
+@router.delete("/structures/{structure_id}", status_code=204)
+def delete_structure(structure_id: UUID, admin: Annotated[User, Depends(get_admin_user)], db: Annotated[Session, Depends(get_db)]):
+    s = db.query(Structure).filter(Structure.id == structure_id).first()
+    if not s:
+        raise HTTPException(404, "Structure non trouvée")
+    db.delete(s)
+    db.commit()
+    logger.info("admin_structure_deleted", structure_id=str(structure_id), by=str(admin.id))
+
+@router.post("/structures/{structure_id}/approve", response_model=AdminStructureItem)
+def approve_structure(structure_id: UUID, admin: Annotated[User, Depends(get_admin_user)], db: Annotated[Session, Depends(get_db)]):
+    structure = structure_service.approve_structure(db, structure_id)
+    db.commit()
+    mc = db.query(func.count(StructureMember.id)).filter(StructureMember.structure_id == structure.id).scalar() or 0
+    logger.info("admin_structure_approved", structure_id=str(structure_id), by=str(admin.id))
+    return _structure_item(structure, None, mc)
+
+@router.post("/structures/{structure_id}/reject", response_model=AdminStructureItem)
+def reject_structure(structure_id: UUID, admin: Annotated[User, Depends(get_admin_user)], db: Annotated[Session, Depends(get_db)]):
+    structure = structure_service.reject_structure(db, structure_id)
+    db.commit()
+    mc = db.query(func.count(StructureMember.id)).filter(StructureMember.structure_id == structure.id).scalar() or 0
+    logger.info("admin_structure_rejected", structure_id=str(structure_id), by=str(admin.id))
+    return _structure_item(structure, None, mc)
 

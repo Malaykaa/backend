@@ -26,12 +26,16 @@ class FeedbackRepository(BaseRepository[UserOfferFeedback]):
 
         Clé = offer_ref, valeur = action la plus récente/prioritaire.
         Priorité : applied > saved > clicked > dismissed > ignored
+        llm_validated et sent sont exclus : ce ne sont pas des signaux de
+        pertinence (cache de score / marqueur d'envoi MatchRunner).
         """
         rows = self.db.execute(
             select(UserOfferFeedback)
             .where(
                 UserOfferFeedback.user_id == user_id,
-                UserOfferFeedback.action != FeedbackAction.llm_validated,
+                UserOfferFeedback.action.not_in(
+                    [FeedbackAction.llm_validated, FeedbackAction.sent]
+                ),
             )
             .order_by(UserOfferFeedback.created_at.desc())
         ).scalars().all()
@@ -147,4 +151,35 @@ class FeedbackRepository(BaseRepository[UserOfferFeedback]):
                 intent_version=float(intent_version),
             )
             self.db.add(feedback)
+        self.db.flush()
+
+    def get_sent_offer_refs(self, user_id: uuid.UUID) -> set[str]:
+        """Offer_refs déjà poussées à ce user via MatchRunner (action=sent).
+
+        Utilisé pour exclure ces offres des prochains envois automatiques
+        (chat + WhatsApp) — une offre n'est envoyée qu'une seule fois.
+        """
+        rows = self.db.execute(
+            select(UserOfferFeedback.offer_ref).where(
+                UserOfferFeedback.user_id == user_id,
+                UserOfferFeedback.action == FeedbackAction.sent,
+            )
+        ).scalars().all()
+        return set(rows)
+
+    def mark_sent_batch(self, user_id: uuid.UUID, offer_refs: list[str]) -> None:
+        """Marque ces offer_refs comme envoyées à ce user (idempotent).
+
+        Appelé par MatchRunner juste après avoir poussé une sélection
+        d'offres, pour qu'elles ne soient plus jamais resélectionnées.
+        """
+        if not offer_refs:
+            return
+        existing = self.get_sent_offer_refs(user_id)
+        for ref in offer_refs:
+            if ref in existing:
+                continue
+            self.db.add(UserOfferFeedback(
+                user_id=user_id, offer_ref=ref, action=FeedbackAction.sent,
+            ))
         self.db.flush()

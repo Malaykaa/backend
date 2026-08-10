@@ -2,6 +2,7 @@
 
 import re
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import BackgroundTasks
 from sqlalchemy.orm import Session
@@ -16,7 +17,7 @@ from app.core.security import (
 )
 from app.models.user import User
 from app.repositories.user_repo import UserRepository
-from app.schemas.auth import RegisterRequest, VerifyOtpRegisterRequest
+from app.schemas.auth import CONSENT_CURRENT_VERSION, RegisterPhoneRequest, RegisterRequest
 from app.services.otp_service import otp_service
 from app.services.whatsapp_service import whatsapp_service
 
@@ -101,16 +102,28 @@ class AuthService:
             await whatsapp_service.send_otp(phone, code)
         return {"ok": True}
 
-    def verify_otp_register(self, data: VerifyOtpRegisterRequest) -> tuple[User, str, str]:
-        """Vérifie l'OTP et crée le compte — retourne (user, access_token, refresh_token)."""
+    def register_phone(
+        self,
+        data: RegisterPhoneRequest,
+        client_ip: str | None = None,
+    ) -> tuple[User, str, str]:
+        """Inscription par numéro WhatsApp — sans vérification OTP.
+
+        Le numéro est auto-déclaré (cf. RegisterPhoneRequest) : aucune preuve
+        de possession n'est demandée, volontairement, pour ne plus dépendre de
+        la fiabilité de livraison WhatsApp à l'inscription.
+        Retourne (user, access_token, refresh_token).
+
+        Le consentement explicite (Loi CI 2013-450, art. 6) est obligatoire.
+        """
+        if not data.consent_given:
+            raise BadRequestError(
+                "Le consentement à la Politique de Confidentialité et aux CGU "
+                "est obligatoire pour créer un compte (Loi n° 2013-450, art. 6)."
+            )
+
         normalized = self._normalize_phone(data.phone)
 
-        # Vérification du code OTP
-        code_valid = self._verify_otp_code(data.phone, data.code)
-        if not code_valid:
-            raise BadRequestError("Code OTP invalide ou expiré.")
-
-        # Vérifier que le numéro n'est pas déjà utilisé
         existing = self.user_repo.get_by_phone(normalized)
         if existing:
             raise ConflictError("Ce numéro est déjà utilisé.")
@@ -126,6 +139,9 @@ class AuthService:
             birth_year=data.birth_year,
             country=data.country,
             primary_role=data.primary_role.value if data.primary_role else None,
+            consent_given_at=datetime.now(timezone.utc),
+            consent_version=CONSENT_CURRENT_VERSION,
+            consent_ip=client_ip,
         )
 
         access, refresh = self._generate_tokens(str(user.id))
