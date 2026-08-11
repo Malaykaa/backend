@@ -66,9 +66,13 @@ jobs:
             echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
             cd ${{ secrets.DEPLOY_PATH }}
             docker pull "${IMAGE}:develop"
+            # --no-deps : staging ne doit jamais recréer db/redis, partagés avec
+            # la production. Sans ce drapeau, Compose les recrée à chaque
+            # alternance prod/staging (l'étiquette config_files change) et le
+            # redémarrage de redis échouait sur un conflit de port.
             BACKEND_IMAGE="${IMAGE}" IMAGE_TAG=develop \
               docker compose -f docker-compose.yml -f docker-compose.staging.yml \
-              up -d --no-build backend-staging
+              up -d --no-build --no-deps backend-staging
             docker compose -f docker-compose.yml -f docker-compose.staging.yml \
               exec -T backend-staging alembic upgrade head
             docker image prune -f
