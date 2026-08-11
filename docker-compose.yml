@@ -21,8 +21,10 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    # Pas de publication de port sur l'hôte : redis n'est joint qu'en interne
+    # via malaykaa_net (REDIS_URL=redis://redis:6379/...). Publier 6379 exposait
+    # un redis sans mot de passe sur 0.0.0.0 et provoquait des collisions de port
+    # à chaque recréation du conteneur.
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
