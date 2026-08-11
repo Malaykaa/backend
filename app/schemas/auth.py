@@ -47,18 +47,31 @@ class LoginRequest(BaseModel):
 # â”€â”€ RequÃªtes â€” phone OTP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
+CONSENT_CURRENT_VERSION = "v1.0"
+
+
 class RegisterPhoneRequest(BaseModel):
     """Inscription par numéro WhatsApp — sans vérification OTP.
 
     Le numéro est auto-déclaré : l'utilisateur le renseigne pour recevoir les
     opportunités sur WhatsApp, ce qui l'incite naturellement à indiquer son
     vrai numéro (aucune vérification de propriété n'est effectuée).
+
+    Le champ ``consent_given`` est obligatoire (Loi CI 2013-450, art. 6) :
+    l'Utilisateur doit avoir explicitement accepté la Politique de Confidentialité
+    et les CGU avant que ses données soient traitées.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     phone: str = Field(min_length=8, max_length=30)
     password: str = Field(min_length=8, max_length=128)
+
+    # Consentement explicite — obligatoire
+    consent_given: bool = Field(
+        default=False,
+        description="L'utilisateur a explicitement accepté la PC et les CGU.",
+    )
 
     # Données profil optionnelles (récoltées pendant l'onboarding)
     first_name: str | None = Field(default=None, max_length=100)

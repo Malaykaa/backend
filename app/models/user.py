@@ -40,6 +40,11 @@ class User(Base):
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
 
+    # Consentement explicite — Loi n° 2013-450 du 19 juin 2013 (CI), art. 6
+    consent_given_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consent_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    consent_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+
     # Relations
     profile: Mapped["Profile"] = relationship(back_populates="user", uselist=False, cascade="all, delete-orphan")
     goals: Mapped[list["Goal"]] = relationship(back_populates="user", cascade="all, delete-orphan")  # noqa: F821

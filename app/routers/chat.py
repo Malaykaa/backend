@@ -94,6 +94,7 @@ class FrontendThread(BaseModel):
     instructions: str | None = None
     presetKey: str | None = None  # noqa: N815
     messages: list[FrontendMessage] = []
+    unreadCount: int = 0  # noqa: N815 — messages assistant non lus depuis last_read_at
     createdAt: str  # noqa: N815
     updatedAt: str  # noqa: N815
 
@@ -225,20 +226,28 @@ def _is_internal_message(msg) -> bool:
 
 def _format_thread(thread: ChatThread, include_messages: bool = False) -> FrontendThread:
     """Transforme un ChatThread ORM en FrontendThread (format frontend)."""
-    messages: list[FrontendMessage] = []
-    if include_messages and thread.messages:
-        messages = [
-            _format_message(m)
-            for m in thread.messages
-            if m.is_active and not _is_internal_message(m)
-        ]
+    visible_msgs = [
+        m for m in (thread.messages or [])
+        if m.is_active and not _is_internal_message(m)
+    ]
 
-    # Calculer updatedAt : dernier message ou created_at
+    messages: list[FrontendMessage] = []
+    if include_messages:
+        messages = [_format_message(m) for m in visible_msgs]
+
+    # Calculer updatedAt : dernier message actif ou created_at
     updated_at = thread.created_at
-    if thread.messages:
-        active_msgs = [m for m in thread.messages if m.is_active]
-        if active_msgs:
-            updated_at = active_msgs[-1].created_at
+    active_all = [m for m in (thread.messages or []) if m.is_active]
+    if active_all:
+        updated_at = active_all[-1].created_at
+
+    # Compter les messages assistant non lus depuis last_read_at
+    last_read = thread.last_read_at
+    unread_count = sum(
+        1 for m in visible_msgs
+        if m.role == MessageRole.assistant
+        and (last_read is None or m.created_at > last_read)
+    )
 
     return FrontendThread(
         id=str(thread.id),
@@ -249,6 +258,7 @@ def _format_thread(thread: ChatThread, include_messages: bool = False) -> Fronte
         instructions=_get_instructions(thread),
         presetKey=_extract_preset_key(thread),
         messages=messages,
+        unreadCount=unread_count,
         createdAt=_iso(thread.created_at),
         updatedAt=_iso(updated_at),
     )
@@ -387,7 +397,10 @@ def get_thread(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ):
-    """Récupère un thread avec messages enrichis (marqueurs injectés)."""
+    """Récupère un thread avec messages enrichis (marqueurs injectés).
+
+    Met à jour last_read_at pour réinitialiser le compteur de non-lus.
+    """
     stmt = (
         sa_select(ChatThread)
         .options(joinedload(ChatThread.goal), joinedload(ChatThread.messages))
@@ -396,6 +409,8 @@ def get_thread(
     thread = db.execute(stmt).unique().scalar_one_or_none()
     if not thread or thread.user_id != current_user.id:
         raise NotFoundError("Thread")
+    thread.last_read_at = datetime.now(timezone.utc)
+    db.commit()
     return _format_thread(thread, include_messages=True)
 
 
@@ -560,14 +575,16 @@ async def stream_message(
             display_content=body.display_content,
             user_payload=body.metadata,
         ):
-            # PlanService est sync — exécuté dans un thread isolé après l'event done
             if event.type == EventType.done and event.agent_response:
                 _resp_snapshot = event.agent_response
                 await _asyncio.to_thread(
                     _sync_persist_plan, thread_id, _user_id, _resp_snapshot,
                 )
+                # Commit ici : user_msg + assistant_msg sont déjà flushés par _save_assistant.
+                # Committer avant le yield garantit que les messages sont en DB même si le
+                # client se déconnecte après réception du done (navigation, fermeture onglet).
+                await db.commit()
             yield format_chat_event(event)
-        await db.commit()
 
     return StreamingResponse(
         transform_events(),

@@ -116,8 +116,9 @@ def register_phone(
     onboarding côté frontend), plutôt que de dépendre de la fiabilité de
     livraison WhatsApp pour vérifier sa possession à l'inscription.
     """
+    client_ip = request.client.host if request.client else None
     service = AuthService(db)
-    user, access, refresh = service.register_phone(body)
+    user, access, refresh = service.register_phone(body, client_ip=client_ip)
     db.commit()
     _set_auth_cookies(response, access, refresh)
     return _auth_result(user, access)

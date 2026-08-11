@@ -24,9 +24,24 @@ class UserRepository(BaseRepository[User]):
         return self.db.scalars(stmt).first()
 
     def get_by_phone(self, phone: str) -> User | None:
-        """Recherche par numéro de téléphone."""
+        """Recherche par numéro de téléphone.
+
+        Fallback sur le suffixe local si la correspondance exacte échoue :
+        le champ de connexion (texte libre "email ou téléphone") n'est pas
+        "country-aware" comme le PhoneInput utilisé à l'inscription/
+        réinitialisation, donc un utilisateur tape souvent son numéro sans
+        l'indicatif pays (ex. "0700000001" au lieu de "2250700000001").
+        On ne retombe sur ce fallback que si le match exact échoue et que
+        le suffixe identifie un utilisateur unique (sinon ambigu → None).
+        """
         stmt = select(User).where(User.phone == phone)
-        return self.db.scalars(stmt).first()
+        user = self.db.scalars(stmt).first()
+        if user is not None or len(phone) < 7:
+            return user
+
+        stmt = select(User).where(User.phone.like(f"%{phone}")).limit(2)
+        matches = self.db.scalars(stmt).all()
+        return matches[0] if len(matches) == 1 else None
 
     def get_with_profile(self, user_id: uuid.UUID) -> User | None:
         stmt = (
@@ -47,8 +62,18 @@ class UserRepository(BaseRepository[User]):
         birth_year: int | None = None,
         country: str | None = None,
         primary_role: str | None = None,
+        consent_given_at=None,
+        consent_version: str | None = None,
+        consent_ip: str | None = None,
     ) -> User:
-        user = User(email=email, password_hash=password_hash, phone=phone)
+        user = User(
+            email=email,
+            password_hash=password_hash,
+            phone=phone,
+            consent_given_at=consent_given_at,
+            consent_version=consent_version,
+            consent_ip=consent_ip,
+        )
         self.db.add(user)
         self.db.flush()
 
