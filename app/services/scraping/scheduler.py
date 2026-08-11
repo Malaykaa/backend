@@ -32,6 +32,12 @@ _LOCK_KEY_PERPLEXITY                = 7_001_003
 _LOCK_KEY_MATCH_RUNNER              = 7_001_004
 _LOCK_KEY_PERPLEXITY_SEARCH_AFRICA  = 7_001_005   # /search Afrique — 06h UTC
 _LOCK_KEY_PERPLEXITY_SEARCH_GLOBAL  = 7_001_006   # /search Mondial — 18h UTC
+_LOCK_KEY_EMBEDDING_BACKFILL        = 7_001_007   # indexation continue — xx:05
+
+# Nombre d'offres indexées par passage du job de rattrapage. Un lot large
+# rattrape vite sans monopoliser le provider : embed_batch découpe déjà en
+# sous-lots de 64 et le job tourne toutes les heures.
+_EMBEDDING_BACKFILL_BATCH = 500
 
 
 def _try_lock(db, key: int) -> bool:
@@ -208,6 +214,48 @@ async def _run_match_job() -> None:
         lock_db.close()  # libère le pg_advisory_lock
 
 
+async def _run_embedding_backfill() -> None:
+    """Indexation sémantique de rattrapage — toutes les heures.
+
+    `embed_pending()` n'était appelé qu'en fin de run de scraping, avec une
+    limite bornée au nombre d'offres qui venaient d'être stockées. Toute offre
+    entrée pendant une indisponibilité du provider (clé absente, panne réseau,
+    quota) restait donc à `embedding = NULL` indéfiniment, et seul un script
+    manuel pouvait la rattraper.
+
+    Ce job détache l'indexation du scraping : l'index se remet à niveau tout
+    seul, quelle que soit la raison du retard. C'est ce qui rend la recherche
+    hybride fiable — une offre non indexée n'est atteignable que par la voie
+    lexicale, donc un index durablement partiel dégrade le classement.
+
+    Sans clé Perplexity, `embed_pending` sort immédiatement (le service se
+    déclare indisponible) : le job coûte alors une requête de comptage.
+    """
+    db = SessionLocal()
+    try:
+        if not _try_lock(db, _LOCK_KEY_EMBEDDING_BACKFILL):
+            logger.debug("Embedding backfill skipped — held by another worker")
+            return
+        from app.services.embedding_service import get_embedding_service
+        if not get_embedding_service().available:
+            logger.debug("Embedding backfill skipped — provider indisponible")
+            return
+
+        from app.services.scraping.pipeline import embed_pending
+        indexed = await embed_pending(db, limit=_EMBEDDING_BACKFILL_BATCH)
+        # `embed_pending` se contente d'un flush : ses appelants historiques
+        # (les scrapers) committent pour lui. Ici la session est à nous, sans
+        # commit explicite les vecteurs seraient perdus à sa fermeture.
+        db.commit()
+        if indexed:
+            logger.info("Embedding backfill: %d offre(s) indexée(s)", indexed)
+    except Exception:
+        db.rollback()
+        logger.error("Embedding backfill job failed", exc_info=True)
+    finally:
+        db.close()
+
+
 async def _run_tendances_delta() -> None:
     """Détecte les changements significatifs de tendances et notifie les users."""
     import asyncio  # noqa: PLC0415
@@ -289,6 +337,14 @@ def start_scheduler() -> None:
             id="apify_heavy",
         )
         logger.info("Scheduled Apify heavy (Sunday 07:00 & 15:00 GMT)")
+
+    # Indexation de rattrapage : toutes les heures à xx:05, soit bien avant le
+    # matching de xx:30 — les offres fraîchement indexées sont donc déjà
+    # visibles par la voie sémantique au tick suivant.
+    _scheduler.add_job(
+        _run_embedding_backfill, "cron", minute=5, id="embedding_backfill",
+    )
+    logger.info("Scheduled embedding backfill (hourly @ :05)")
 
     # Matching automatique : toutes les heures, à xx:30 pour décaler
     # des fenêtres de scraping (laisse l'indexation embeddings se terminer).

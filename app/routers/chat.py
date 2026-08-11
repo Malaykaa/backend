@@ -144,6 +144,18 @@ def _iso(dt: datetime | None) -> str:
     return dt.isoformat()
 
 
+def _match_score_pct(offer: dict) -> int:
+    """Pourcentage de correspondance affiché, sur l'échelle commune 0–100.
+
+    Tolère les offres sérialisées avant l'introduction de `match_score` : elles
+    proviennent du chemin sémantique, dont le score brut vivait sur 0–75.
+    """
+    value = offer.get("match_score")
+    if value is None:
+        value = float(offer.get("relevance_score") or 0.0) / 75.0 * 100.0
+    return int(max(0.0, min(100.0, float(value))))
+
+
 def _extract_preset_key(thread: ChatThread) -> str | None:
     """Extrait le presetKey depuis le goal.context_data du thread."""
     if thread.goal and thread.goal.context_data:
@@ -749,7 +761,11 @@ async def get_pour_moi(
                 title=offer.get("title", ""),
                 source=offer.get("type"),
                 url=offer.get("url"),
-                matchScore=int(min(offer.get("relevance_score", 0) * 2.5, 100)),
+                # `match_score` est normalisé 0–100 par ScrapedOfferService et
+                # comparable entre modes. L'ancien `relevance_score * 2.5`
+                # supposait une échelle 0–40, qui ne correspondait à aucune des
+                # deux branches de recherche (0–75 sémantique, 0–25 lexicale).
+                matchScore=_match_score_pct(offer),
                 justification=justification or None,
                 offerRef=offer_ref or None,
                 createdAt=_iso(offer.get("scraped_at")),
