@@ -33,7 +33,12 @@ from app.models.user import Profile, User
 from app.models.user_intent import UserIntent
 from app.repositories.chat_repo import ChatRepository
 from app.repositories.feedback_repo import FeedbackRepository
-from app.services.scraped_offer_service import ScrapedOfferService
+from app.services.scraped_offer_service import (
+    MATCH_MODE_HYBRID,
+    MATCH_MODE_LEXICAL,
+    MATCH_MODE_SEMANTIC,
+    ScrapedOfferService,
+)
 from app.services.whatsapp_service import whatsapp_service
 
 if TYPE_CHECKING:
@@ -45,6 +50,109 @@ logger = logging.getLogger(__name__)
 # de matching automatique tant que l'utilisateur n'a pas remis à jour son
 # objectif (évite de spammer pour des intentions périmées).
 INTENT_MAX_AGE_DAYS = 30
+
+# Seuil de notification in-app, exprimé sur l'échelle commune `match_score`
+# (0–100). Dépend du mode : le repli lexical dispose d'un signal plus pauvre
+# que le sémantique, exiger de lui la même confiance le rendrait muet.
+NOTIFY_THRESHOLD: dict[str, float] = {
+    MATCH_MODE_SEMANTIC: 80.0,
+    MATCH_MODE_LEXICAL: 70.0,
+    # Les deux voies ont trouvé l'offre indépendamment. C'est la corroboration
+    # la plus forte dont on dispose, on peut donc se permettre d'être un peu
+    # moins exigeant qu'en sémantique seul sans notifier du bruit.
+    MATCH_MODE_HYBRID: 75.0,
+}
+NOTIFY_THRESHOLD_DEFAULT = 80.0
+
+
+# Nombre maximum d'objectifs traités par run. Au-delà, le quota par objectif
+# tomberait à une offre et le message perdrait sa substance.
+MAX_GOALS_PER_RUN = 3
+
+# Amplitude maximale, en points de `match_score`, de l'ajustement lié au goût
+# exprimé par l'utilisateur. Volontairement modeste : le feedback affine un
+# classement, il ne doit jamais se substituer à la pertinence mesurée ni
+# enfermer quelqu'un dans ce qu'il a déjà consulté.
+AFFINITY_MAX_ADJUSTMENT = 12.0
+
+
+def _apply_type_affinity(offers: list[dict], affinity: dict[str, float]) -> None:
+    """Module `match_score` selon le goût de l'utilisateur, sur place.
+
+    `affinity` associe un type d'offre à une valeur dans [-1, +1], dérivée des
+    actions passées (postulé, sauvegardé, cliqué / ignoré, écarté).
+
+    Jusqu'ici ce signal n'était exploité que par le router de recommandations,
+    et uniquement sur l'offre exacte : écarter dix offres d'un type n'empêchait
+    pas d'en recevoir une onzième par WhatsApp.
+
+    L'ajustement est borné et le score reste dans [0, 100]. Un type jamais
+    évalué laisse l'offre inchangée.
+    """
+    if not affinity:
+        return
+    for offer in offers:
+        weight = affinity.get(offer.get("type") or "")
+        if not weight:
+            continue
+        adjusted = _match_score_of(offer) + AFFINITY_MAX_ADJUSTMENT * weight
+        offer["match_score"] = max(0.0, min(100.0, adjusted))
+        offer["affinity_applied"] = round(weight, 3)
+
+
+def _log_match_batch(
+    user_id: uuid.UUID, intent: UserIntent, offers: list[dict]
+) -> None:
+    """Trace ce qui est envoyé, pour pouvoir diagnostiquer une plainte.
+
+    Sans cette trace, une réclamation « je reçois n'importe quoi » était
+    ininstruisable : ni le mode de recherche, ni le score, ni le rang n'étaient
+    conservés. On journalise volontairement le mode par offre — c'est lui qui
+    dit si le résultat vient du vecteur, des mots-clés, ou des deux.
+    """
+    detail = " | ".join(
+        f"#{rank} {o.get('match_mode', '?')} {_match_score_of(o):.0f}% "
+        f"{(o.get('title') or '')[:40]}"
+        for rank, o in enumerate(offers, start=1)
+    )
+    logger.info(
+        "[Match] user=%s goal=%s intent_type=%s domaine=%s → %d offre(s) : %s",
+        user_id, intent.goal_id, intent.intent_type, intent.domain,
+        len(offers), detail,
+    )
+
+
+def _log_llm_filter(
+    user_id: uuid.UUID, intent: UserIntent, before: int, after: int
+) -> None:
+    """Compte les offres écartées par la vérification LLM.
+
+    Un taux d'exclusion élevé est le signal le plus précoce qu'un matching
+    part en vrille : les candidats remontent, mais le LLM les juge hors sujet.
+    Auparavant seul le rejet total laissait une trace.
+    """
+    excluded = before - after
+    if excluded <= 0:
+        return
+    logger.info(
+        "[Match] user=%s goal=%s : %d/%d offre(s) écartée(s) par le LLM",
+        user_id, intent.goal_id, excluded, before,
+    )
+
+
+def _match_score_of(offer: dict) -> float:
+    """Lit `match_score` en tolérant les dicts produits avant son introduction.
+
+    Un dict sans `match_score` provient forcément du chemin sémantique
+    historique, dont le score brut vivait sur 0–75 : on le reprojette pour ne
+    pas régresser silencieusement à 0 si un appelant construit encore des
+    offres à l'ancienne.
+    """
+    value = offer.get("match_score")
+    if value is not None:
+        return float(value)
+    legacy = float(offer.get("relevance_score") or 0.0)
+    return min(100.0, legacy / 75.0 * 100.0)
 
 
 class MatchRunner:
@@ -117,82 +225,117 @@ class MatchRunner:
         return eligible
 
     async def _run_for_user(self, user_id: uuid.UUID, now: datetime) -> int:
-        """Exécute le matching pour un user. Retourne le nb d'offres poussées."""
-        intent = self._best_intent(user_id)
-        if intent is None:
+        """Exécute le matching pour un user. Retourne le nb d'offres poussées.
+
+        Traite **toutes** les intentions actives, pas seulement la plus
+        récente : un utilisateur suivant trois objectifs en avait deux
+        silencieusement privés de matching.
+
+        Le volume total reste borné par `match_top_k` — le quota est réparti
+        entre les objectifs, chacun en recevant au moins un. Couvrir plus
+        d'objectifs ne doit pas se traduire par plus de sollicitations.
+        """
+        intents = self._active_intents(user_id)
+        if not intents:
             return 0
 
-        # Vérifier la fenêtre horaire programmée par l'utilisateur.
-        # Si l'heure courante ne correspond pas → skip sans marquer le run
-        # (match_last_run_at reste inchangé ; le prochain tick re-tentera).
-        if not self._is_scheduled_time(intent, now):
+        # Chaque objectif porte sa propre fenêtre horaire (notif_mode /
+        # notif_time du goal) : on filtre avant de répartir le quota.
+        due = [i for i in intents if self._is_scheduled_time(i, now)]
+        if not due:
             return 0
 
-        # On élargit la recherche (x3) car les offres déjà envoyées seront
-        # exclues ensuite — éviter de retomber sous match_top_k après filtrage.
-        offers = await self.offer_svc.search_for_matching(
-            intent, limit=self.settings.match_top_k * 3,
-        )
-        if not offers:
-            self._mark_run(user_id, now)
-            self.db.commit()
-            return 0
-
-        # Exclure les offres déjà poussées à ce user (action=sent) — une
-        # offre n'est envoyée qu'une seule fois, peu importe combien de
-        # runs suivants la retrouvent pertinente pour la même intention.
         already_sent = self.feedback_repo.get_sent_offer_refs(user_id)
-        offers = [o for o in offers if o.get("offer_ref") not in already_sent]
-        offers = offers[: self.settings.match_top_k]
-        if not offers:
+        affinity = self.feedback_repo.get_type_affinity(user_id)
+        quota = max(1, self.settings.match_top_k // len(due))
+
+        batches: list[tuple[UserIntent, list[dict]]] = []
+        seen_refs: set[str] = set()
+
+        for intent in due:
+            # On élargit (x3) car les offres déjà envoyées seront exclues
+            # ensuite — éviter de retomber sous le quota après filtrage.
+            found = await self.offer_svc.search_for_matching(
+                intent, limit=quota * 3,
+            )
+            if not found:
+                continue
+
+            # Exclure les offres déjà poussées à ce user (action=sent), et
+            # celles déjà retenues pour un autre objectif de ce même run.
+            candidates = [
+                o for o in found
+                if o.get("offer_ref") not in already_sent
+                and o.get("offer_ref") not in seen_refs
+            ]
+            if not candidates:
+                continue
+
+            # Le goût exprimé par l'utilisateur module la confiance avant
+            # la sélection finale.
+            _apply_type_affinity(candidates, affinity)
+            candidates.sort(key=_match_score_of, reverse=True)
+            selected = candidates[:quota]
+
+            # Vérification LLM de pertinence avant présentation.
+            # Si self.llm est None (scheduler non configuré), on passe.
+            if self.llm is not None:
+                before = len(selected)
+                selected = await _verify_relevance_llm(selected, intent, self.llm)
+                _log_llm_filter(user_id, intent, before, len(selected))
+            if not selected:
+                continue
+
+            seen_refs.update(o["offer_ref"] for o in selected if o.get("offer_ref"))
+            batches.append((intent, selected))
+
+        if not batches:
             self._mark_run(user_id, now)
             self.db.commit()
             return 0
 
-        # Vérification LLM de pertinence avant présentation à l'utilisateur.
-        # Si self.llm est None (scheduler non configuré), on passe directement.
-        if self.llm is not None:
-            offers = await _verify_relevance_llm(offers, intent, self.llm)
-            if not offers:
-                self._mark_run(user_id, now)
-                self.db.commit()
-                return 0
+        all_offers: list[dict] = []
+        for intent, offers in batches:
+            _log_match_batch(user_id, intent, offers)
 
-        # 1. Poster un message assistant dans le thread de l'intention.
-        chat_body = _format_chat_message(offers)
-        interaction = _build_interaction_payload(offers)
-        self.chat_repo.add_message(
-            thread_id=intent.thread_id,
-            role=MessageRole.assistant,
-            content=chat_body,
-            payload={
+            # 1. Message assistant dans le thread de l'objectif concerné.
+            interaction = _build_interaction_payload(offers)
+            self.chat_repo.add_message(
+                thread_id=intent.thread_id,
+                role=MessageRole.assistant,
+                content=_format_chat_message(offers),
+                payload={
                 "kind": "auto_match",
                 "offers": [o["offer_ref"] for o in offers],
                 # inject_markers (appelé sur fetch) transforme ces champs
                 # en @@PROPOSITIONS@@ et @@STEPS@@ — contextualisés selon
                 # le type dominant des offres matchées.
-                "suggestions": interaction["suggestions"],
-                "steps": interaction["steps"],
-            },
-        )
+                    "suggestions": interaction["suggestions"],
+                    "steps": interaction["steps"],
+                },
+            )
+            all_offers.extend(offers)
 
-        # 2. Notifications in-app pour les offres avec score >= 80%
-        self._create_match_notifications(user_id, offers)
+        # 2. Notifications in-app pour les offres à haute pertinence.
+        self._create_match_notifications(user_id, all_offers)
 
         # Marquer ces offres comme envoyées — ne plus jamais les repousser
         # à ce user, même si elles restent pertinentes lors d'un run futur.
         self.feedback_repo.mark_sent_batch(
-            user_id, [o["offer_ref"] for o in offers if o.get("offer_ref")]
+            user_id, [o["offer_ref"] for o in all_offers if o.get("offer_ref")]
         )
 
-        # 3. Notif WhatsApp si phone + provider configuré (skip silencieux sinon).
+        # 3. Une seule notification WhatsApp par run, quel que soit le nombre
+        #    d'objectifs traités : plusieurs messages coup sur coup seraient
+        #    vécus comme du spam. Le lien pointe vers l'objectif le mieux servi.
         phone = self._user_phone(user_id)
         if phone:
+            richest = max(batches, key=lambda b: len(b[1]))[0]
             try:
-                thread_url = f"{self.settings.frontend_url.rstrip('/')}/app/chat/{intent.thread_id}"
+                thread_url = f"{self.settings.frontend_url.rstrip('/')}/app/chat/{richest.thread_id}"
                 await whatsapp_service.send_message(
                     phone,
-                    _format_wa_message(offers, thread_url),
+                    _format_wa_message(all_offers, thread_url),
                 )
             except Exception:
                 logger.warning(
@@ -203,7 +346,38 @@ class MatchRunner:
 
         self._mark_run(user_id, now)
         self.db.commit()
-        return len(offers)
+        return len(all_offers)
+
+    def _active_intents(self, user_id: uuid.UUID) -> list[UserIntent]:
+        """Une intention par objectif actif, la plus récente de chacun.
+
+        `_best_intent` ne renvoyait que la dernière intention tous objectifs
+        confondus : les autres objectifs de l'utilisateur ne recevaient jamais
+        de matching, sans que rien ne le signale.
+
+        Les intentions sans `goal_id` (extraites d'un thread libre) sont
+        regroupées sous une clé commune : elles décrivent la même recherche
+        non rattachée, inutile de les traiter plusieurs fois.
+
+        Le nombre d'objectifs traités par run est borné pour que le quota par
+        objectif reste utile — au-delà, chacun recevrait une seule offre.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(days=INTENT_MAX_AGE_DAYS)
+        rows = self.db.execute(
+            select(UserIntent)
+            .where(
+                UserIntent.user_id == user_id,
+                UserIntent.extracted_at >= cutoff,
+            )
+            .order_by(UserIntent.extracted_at.desc())
+        ).scalars().all()
+
+        latest_per_goal: dict[str, UserIntent] = {}
+        for intent in rows:  # déjà triées du plus récent au plus ancien
+            key = str(intent.goal_id) if intent.goal_id else "_no_goal"
+            if key not in latest_per_goal:
+                latest_per_goal[key] = intent
+        return list(latest_per_goal.values())[:MAX_GOALS_PER_RUN]
 
     def _best_intent(self, user_id: uuid.UUID) -> UserIntent | None:
         """Dernière intention assez récente pour servir de query de matching."""
@@ -226,20 +400,27 @@ class MatchRunner:
     def _create_match_notifications(
         self, user_id: uuid.UUID, offers: list[dict]
     ) -> None:
-        """Crée des notifications in-app pour les offres avec score normalisé >= 80%.
+        """Crée des notifications in-app pour les offres à haute pertinence.
 
-        score brut pgvector (0–75) → match_pct = min(99, round(score / 75 * 100))
-        Seuil 80 % → score brut >= 60.
+        S'appuie sur `match_score`, normalisé 0–100 et comparable entre les deux
+        modes de recherche. L'ancienne version lisait `relevance_score`, dont
+        l'échelle diffère selon le mode : en repli lexical le maximum atteignable
+        était 25 pour un seuil fixé à 60, donc aucune notification ne pouvait
+        jamais être créée.
+
+        Le seuil dépend du mode. Le lexical porte moins d'information que le
+        sémantique — exiger la même confiance des deux reviendrait à le rendre
+        muet, l'exiger trop peu reviendrait à notifier du bruit.
         """
         from app.models.notification import UserNotification
 
-        HIGH_SCORE_THRESHOLD = 60.0  # brut pgvector ≈ 80 % normalisé
         created = 0
         for o in offers:
-            raw_score = float(o.get("relevance_score") or 0.0)
-            if raw_score < HIGH_SCORE_THRESHOLD:
+            match_score = _match_score_of(o)
+            mode = o.get("match_mode") or MATCH_MODE_SEMANTIC
+            if match_score < NOTIFY_THRESHOLD.get(mode, NOTIFY_THRESHOLD_DEFAULT):
                 continue
-            score_pct = min(99, round(raw_score / 75.0 * 100))
+            score_pct = min(99, round(match_score))
             offer_id_raw = o.get("id") or o.get("offer_id")
             try:
                 offer_id = uuid.UUID(str(offer_id_raw)) if offer_id_raw else None
@@ -568,9 +749,10 @@ def _format_chat_message(offers: Iterable[dict]) -> str:
         company = o.get("company") or ""
         location = o.get("location") or ""
         description = (o.get("description") or "").strip()
-        score = float(o.get("relevance_score") or 0.0)
-        # Normalise le score interne (0–75) vers un pourcentage affiché (0–99 %)
-        match_pct = min(99, round(score / 75.0 * 100))
+        # `match_score` est déjà sur 0–100 et comparable entre modes ; l'ancien
+        # calcul divisait `relevance_score` par 75, ce qui plafonnait l'affichage
+        # à 33 % en repli lexical où le maximum réel est 25.
+        match_pct = min(99, round(_match_score_of(o)))
 
         link = f"[{title}]({url})" if url else f"**{title}**"
         meta = " · ".join(p for p in [company, location] if p)
