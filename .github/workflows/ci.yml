@@ -55,6 +55,28 @@ jobs:
       name: staging
       url: https://api.staging.malayka.co/api/docs
     steps:
+      - uses: actions/checkout@v4
+
+      # Le pipeline ne déployait jusqu'ici que l'image applicative : les
+      # fichiers docker-compose*.yml du serveur étaient copiés une seule fois,
+      # à la main, lors du tout premier déploiement (cf. scripts/first-deploy.sh)
+      # et plus jamais mis à jour ensuite. Un correctif d'infra committé dans
+      # ce repo ne prenait donc jamais effet en production — c'est ce qui a
+      # provoqué l'incident du port 6379 déjà « corrigé » dans git mais jamais
+      # présent sur le serveur qui exécute réellement Docker.
+      #
+      # .env / .env.staging sont volontairement EXCLUS : ils contiennent les
+      # vrais secrets du serveur, jamais les gabarits versionnés dans ce repo.
+      - name: Sync docker-compose files to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          source: "docker-compose.yml,docker-compose.staging.yml"
+          target: ${{ secrets.DEPLOY_PATH }}
+          strip_components: 0
+
       - uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.DEPLOY_HOST }}
@@ -70,9 +92,12 @@ jobs:
             # la production. Sans ce drapeau, Compose les recrée à chaque
             # alternance prod/staging (l'étiquette config_files change) et le
             # redémarrage de redis échouait sur un conflit de port.
+            # --remove-orphans : nettoie les conteneurs d'anciens noms de
+            # service (ex. backend-backend-staging-1) que Compose signalait
+            # sans les retirer.
             BACKEND_IMAGE="${IMAGE}" IMAGE_TAG=develop \
               docker compose -f docker-compose.yml -f docker-compose.staging.yml \
-              up -d --no-build --no-deps backend-staging
+              up -d --no-build --no-deps --remove-orphans backend-staging
             docker compose -f docker-compose.yml -f docker-compose.staging.yml \
               exec -T backend-staging alembic upgrade head
             docker image prune -f
@@ -86,6 +111,20 @@ jobs:
       name: production
       url: https://api.malayka.co/api/docs
     steps:
+      - uses: actions/checkout@v4
+
+      # Voir le commentaire équivalent dans deploy-staging : sans cette étape,
+      # aucun changement d'infra committé ici n'atteint jamais le serveur.
+      - name: Sync docker-compose files to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          source: "docker-compose.yml,docker-compose.staging.yml"
+          target: ${{ secrets.DEPLOY_PATH }}
+          strip_components: 0
+
       - uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.DEPLOY_HOST }}
@@ -98,6 +137,12 @@ jobs:
             cd ${{ secrets.DEPLOY_PATH }}
             docker pull "${IMAGE}:latest"
             BACKEND_IMAGE="${IMAGE}" IMAGE_TAG=latest \
-              docker compose up -d --no-build backend
+              docker compose up -d --no-build --remove-orphans backend
             docker compose exec -T backend alembic upgrade head
             docker image prune -f
+
+            # Diagnostic conservé dans les logs du run : si un port venait à
+            # nouveau se heurter à un processus externe à ce projet Compose,
+            # cette ligne identifie le responsable sans rien arrêter de force.
+            echo "--- État des conteneurs après déploiement ---"
+            docker compose ps
