@@ -37,8 +37,15 @@ services:
   backend:
     image: ${BACKEND_IMAGE:-malaykaa-backend}:${IMAGE_TAG:-latest}
     env_file: .env
-    ports:
-      - "8000:8000"
+    # Pas de publication de port sur l'hôte : nginx ("frontend", cf. son
+    # docker-compose.yml) atteint ce service via malaykaa_net par résolution
+    # DNS interne (proxy_pass http://backend:8000) — backend-staging fait
+    # déjà ainsi sans publier de port, la preuve que ce n'est pas nécessaire.
+    #
+    # Fermer cet accès direct est la condition de sécurité qui rend sûr le
+    # --forwarded-allow-ips='*' ajouté au Dockerfile : tant que le port était
+    # public, quiconque le contactait directement pouvait usurper n'importe
+    # quelle IP via un en-tête X-Forwarded-For forgé.
     depends_on:
       db:
         condition: service_healthy
