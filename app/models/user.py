@@ -67,6 +67,7 @@ class Profile(Base):
     )
     birth_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     country: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    nationality: Mapped[str | None] = mapped_column(String(100), nullable=True)
     primary_role: Mapped[str | None] = mapped_column(
         Enum(PrimaryRole, name="primary_role_enum", create_constraint=False), nullable=True
     )

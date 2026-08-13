@@ -81,6 +81,9 @@ async def main() -> int:
         svc = ScrapedOfferService(db)
         per_case: list[dict] = []
         per_mode: dict[str, list[int]] = {}
+        # (offres jugées, offres remontées) par cas — sert à mesurer la
+        # fiabilité des chiffres, pas la qualité du matching.
+        judged_counts: list[tuple[int, int]] = []
 
         for case in annotated:
             truth = {
@@ -97,12 +100,26 @@ async def main() -> int:
                 continue  # intention supprimée depuis la génération du jeu
 
             results = await svc.search_for_matching(intent, limit=10)
-            # Une offre remontée mais absente du jeu n'est pas jugeable : on la
-            # neutralise plutôt que de la compter comme mauvaise, sinon toute
-            # amélioration du rappel dégraderait mécaniquement le score.
-            relevances = [
-                truth.get(o.get("offer_ref"), 0) for o in results
+            # Une offre remontée mais absente du jeu n'est pas jugeable : on
+            # l'ÉCARTE de la liste évaluée au lieu de lui donner 0.
+            #
+            # Lui attribuer 0 la compterait comme hors sujet, et pénaliserait
+            # donc toute amélioration qui fait remonter une bonne offre absente
+            # du vivier d'origine — l'outil sanctionnerait les progrès qu'il est
+            # censé mesurer.
+            #
+            # C'est l'évaluation « en liste condensée » : on ne juge que ce qui
+            # a été annoté, en conservant l'ordre de restitution. Contrepartie
+            # assumée : une mauvaise offre non annotée échappe à la sanction,
+            # d'où le taux d'annotation affiché plus bas — sous ~70 %, les
+            # chiffres deviennent peu fiables et le jeu doit être complété.
+            judged = [
+                truth[ref]
+                for ref in (o.get("offer_ref") for o in results)
+                if ref in truth
             ]
+            relevances = judged
+            judged_counts.append((len(judged), len(results)))
             for offer in results:
                 mode = offer.get("match_mode", "?")
                 per_mode.setdefault(mode, []).append(
@@ -125,8 +142,22 @@ async def main() -> int:
         overall = summarize(per_case)
         baseline = _load(args.baseline)["overall"] if args.baseline else None
 
+        judged_total = sum(j for j, _ in judged_counts)
+        returned_total = sum(r for _, r in judged_counts)
+        judged_rate = judged_total / returned_total if returned_total else 0.0
+
         print()
         print(f"Cas évalués : {len(per_case)}")
+        print(
+            f"Taux d'annotation : {judged_rate:.0%} "
+            f"({judged_total}/{returned_total} offres remontées sont annotées)"
+        )
+        if judged_rate < 0.7:
+            print(
+                "  ⚠ Sous 70 %, les métriques ne sont pas fiables : trop d'offres\n"
+                "    remontées échappent au jugement. Annoter les nouvelles offres\n"
+                "    ou régénérer le jeu."
+            )
         print()
         header = f"{'Métrique':<14}{'Valeur':>9}"
         if baseline:

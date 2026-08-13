@@ -24,6 +24,7 @@ class ProfileUpdate(BaseModel):
     birth_date: str | None = Field(default=None, exclude=True)
     country: str | None = Field(default=None, max_length=100)
     city: str | None = Field(default=None, max_length=100)
+    nationality: str | None = Field(default=None, max_length=100)
     language: str | None = Field(default=None, max_length=10)
     primary_role: PrimaryRole | None = None
     domain: str | None = Field(default=None, max_length=200)
