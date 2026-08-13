@@ -273,6 +273,7 @@ def create_offer(
     """
     import uuid as _uuid
     from app.models.scraped_offer import ScrapedOfferType
+    from app.services.scraping.pipeline import process_offer
 
     # Résoudre l'offer_type vers l'enum
     try:
@@ -298,6 +299,15 @@ def create_offer(
         embedding=None,  # généré par le prochain run scheduler
     )
     db.add(offer)
+    db.flush()  # attribue offer.id, nécessaire pour process_offer
+
+    # Même pipeline que les scrapers (normalized_title + quality_score) :
+    # sans cet appel, quality_score restait NULL et la recherche par
+    # mots-clés (ORDER BY quality_score DESC NULLS LAST) exclut ces offres
+    # du lot examiné dès que le nombre de candidats concurrents dépasse la
+    # limite de la requête — invisibles au matching sans jamais d'erreur.
+    process_offer(db, offer.id)
+
     db.commit()
     db.refresh(offer)
 

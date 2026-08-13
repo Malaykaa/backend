@@ -190,6 +190,7 @@ class ProfileResponse(BaseModel):
     birth_year: int | None = None
     country: str | None = None
     city: str | None = None
+    nationality: str | None = None
     language: str | None = None
     primary_role: str | None = None
     domain: str | None = None
