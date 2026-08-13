@@ -21,6 +21,8 @@ from app.models.structure import (
     InvitationStatus, MembershipStatus, Structure, StructureInvitation,
     StructureMember, StructureMemberRole, StructureStatus,
 )
+from app.schemas.admin_analytics import AdminAnalytics
+from app.services.admin_analytics_service import AdminAnalyticsService
 from app.schemas.admin import (AdminDeliverableItem,
     AdminOfferCreate, AdminUserCreate, AdminDocumentItem, AdminGoalItem, AdminIntentItem, AdminMessageItem, AdminOfferDetail, AdminOfferItem, AdminOfferUpdate, AdminPaginated, AdminStats, AdminStructureClassroom, AdminStructureDetail, AdminStructureInvitation, AdminStructureItem, AdminStructureMember, AdminStructureUpdate, AdminThreadDetail, AdminThreadItem, AdminUserDetail, AdminUserItem, AdminUserUpdate)
 from app.services import structure_service
@@ -65,6 +67,21 @@ def get_stats(admin: Annotated[User, Depends(get_admin_user)], db: Annotated[Ses
         intents_total=db.query(func.count(UserIntent.id)).scalar() or 0,
         goals_total=db.query(func.count(Goal.id)).scalar() or 0,
     )
+
+@router.get("/analytics", response_model=AdminAnalytics)
+def get_analytics(
+    admin: Annotated[User, Depends(get_admin_user)],
+    db: Annotated[Session, Depends(get_db)],
+    months: Annotated[int, Query(ge=3, le=36, description="Profondeur d'analyse en mois.")] = 12,
+) -> AdminAnalytics:
+    """Toutes les distributions et séries du tableau de bord, en un seul appel.
+
+    Regroupé volontairement : le dashboard affiche une vingtaine de graphiques
+    qui doivent tous refléter le même instant. Les servir par endpoints séparés
+    exposerait à des vues incohérentes entre deux requêtes.
+    """
+    return AdminAnalyticsService(db).build(months=months)
+
 
 @router.get("/users", response_model=AdminPaginated[AdminUserItem])
 def list_users(admin: Annotated[User, Depends(get_admin_user)], db: Annotated[Session, Depends(get_db)], page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=100), q: str | None = None, role: str | None = None, active: bool | None = None):
