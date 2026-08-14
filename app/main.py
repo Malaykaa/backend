@@ -147,9 +147,42 @@ def health_ready():
         _logging.getLogger(__name__).error("[health/ready] Redis check failed: %s", exc)
         checks["redis"] = "error"
 
-    all_ok = all(v == "ok" for v in checks.values())
+    # ── Schéma de base ──────────────────────────────────────────────────────
+    #
+    # Le pipeline de déploiement exécute les migrations sans faire échouer le
+    # déploiement en cas d'erreur. Une migration ratée passait donc totalement
+    # inaperçue : l'image démarrait, les routes répondaient, et seules les
+    # requêtes touchant les tables manquantes échouaient — en production, sans
+    # accès au serveur, le diagnostic était impossible.
+    #
+    # On compare ici la révision réellement appliquée en base à celle
+    # embarquée dans l'image. Seuls des identifiants de révision sont exposés :
+    # aucun nom de table, aucune donnée.
+    schema: dict[str, str | None] = {"applied": None, "expected": None}
+    try:
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        with engine.connect() as conn:
+            row = conn.execute(text("SELECT version_num FROM alembic_version")).first()
+        schema["applied"] = row[0] if row else None
+        schema["expected"] = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
+        checks["schema"] = "ok" if schema["applied"] == schema["expected"] else "outdated"
+    except Exception as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).error("[health/ready] schema check failed: %s", exc)
+        checks["schema"] = "error"
+
+    # Un schéma en retard n'empêche pas de servir : le reste de l'application
+    # continue de fonctionner. On le signale sans sortir le nœud de rotation,
+    # ce que ferait un statut « degraded ».
+    all_ok = all(v in ("ok", "outdated") for v in checks.values())
     return JSONResponse(
         status_code=200 if all_ok else 503,
-        content={"status": "ok" if all_ok else "degraded", "checks": checks},
+        content={
+            "status": "ok" if all(v == "ok" for v in checks.values()) else "degraded",
+            "checks": checks,
+            "schema": schema,
+        },
     )
 
