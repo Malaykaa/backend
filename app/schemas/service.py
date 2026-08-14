@@ -18,7 +18,9 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.service import MatchDecision, MatchSource, ProviderStatus, RequestStatus, RequestType
+from app.models.service import (
+    DeliveryMode, MatchDecision, MatchSource, ProviderStatus, RequestStatus, RequestType,
+)
 
 
 # ── Vitrine prestataire ─────────────────────────────────────────────────────
@@ -33,6 +35,9 @@ class ProviderUpsert(BaseModel):
                        description="Intitulé court, ex. « Plombier · dépannage 24h ».")
     description: str = Field(min_length=20, max_length=5000)
     keywords: list[str] = Field(default_factory=list, max_length=15)
+    delivery_mode: DeliveryMode = Field(
+        description="À distance, en présentiel ou hybride — conditionne la pertinence de la ville.",
+    )
     city: str | None = Field(default=None, max_length=100)
     country: str | None = Field(default=None, max_length=100)
     rate_text: str | None = Field(default=None, max_length=200)
@@ -60,6 +65,7 @@ class ProviderResponse(BaseModel):
     title: str
     description: str
     keywords: list[str] = Field(default_factory=list)
+    delivery_mode: DeliveryMode = DeliveryMode.onsite
     city: str | None = None
     country: str | None = None
     rate_text: str | None = None
@@ -83,6 +89,7 @@ class ProviderPublicCard(BaseModel):
     title: str
     description: str
     keywords: list[str] = Field(default_factory=list)
+    delivery_mode: DeliveryMode = DeliveryMode.onsite
     city: str | None = None
     country: str | None = None
     rate_text: str | None = None
@@ -100,6 +107,9 @@ class RequestCreate(BaseModel):
     title: str = Field(min_length=3, max_length=300)
     description: str = Field(min_length=10, max_length=5000)
     keywords: list[str] = Field(default_factory=list, max_length=15)
+    delivery_mode: DeliveryMode = Field(
+        description="À distance, en présentiel ou hybride — conditionne la pertinence de la ville.",
+    )
     city: str | None = Field(default=None, max_length=100)
     country: str | None = Field(default=None, max_length=100)
     budget_hint: str | None = Field(default=None, max_length=200)
@@ -128,6 +138,7 @@ class RequestResponse(BaseModel):
     title: str
     description: str
     keywords: list[str] = Field(default_factory=list)
+    delivery_mode: DeliveryMode = DeliveryMode.onsite
     city: str | None = None
     country: str | None = None
     budget_hint: str | None = None
@@ -176,6 +187,7 @@ class ProviderInboxItem(BaseModel):
     request_type: RequestType
     title: str
     description: str
+    delivery_mode: DeliveryMode = DeliveryMode.onsite
     city: str | None = None
     country: str | None = None
     budget_hint: str | None = None
