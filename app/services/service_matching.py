@@ -1,17 +1,34 @@
 """Matching demandes ↔ prestataires.
 
-Ce module ne modifie AUCUN code existant. Il importe les primitives déjà
-écrites et testées pour les offres scrapées, et les applique à de nouveaux
-objets : les modèles exposent volontairement `title`, `normalized_title` et
-`description`, les trois attributs que `_term_coverage` lit par typage canard.
-
-Conséquence : le classement obéit aux mêmes règles que le matching d'offres
-(échelle 0–100, fusion sémantique + lexicale, corroboration bornée), sans
-duplication de logique ni risque de régression sur l'existant.
+Ce module ne modifie AUCUN code existant du matching d'offres. Il importe les
+primitives déjà écrites et testées, et les applique à de nouveaux objets : les
+modèles exposent volontairement `title`, `normalized_title` et `description`,
+les trois attributs que `_term_coverage` lit par typage canard.
 
 Deux viviers, jamais mélangés :
 - `provider` : vitrines publiées, interrogées à la création de la demande ;
 - `public`   : tous les utilisateurs, uniquement si le client élargit lui-même.
+
+La géographie est un FILTRE, pas un bonus de score
+───────────────────────────────────────────────────
+Le prestataire a toujours une ville et un pays : il est forcément quelque
+part. C'est le CLIENT qui décide, en créant sa demande, si cette localisation
+compte — via `ServiceRequest.delivery_mode` :
+
+- `remote`           : aucun filtre. La localisation des prestataires est
+  ignorée, le classement se fait uniquement sur la pertinence au besoin.
+- `onsite` / `hybrid` : filtre réel, appliqué en SQL avant même que le
+  classement par pertinence ne commence — d'abord le pays, puis la ville
+  quand elle est précisée. Un prestataire hors zone n'est jamais candidat,
+  quel que soit son score de pertinence.
+
+Ce choix — filtrer plutôt que pondérer — élimine une classe entière de bug :
+avec un bonus, la géographie pouvait à elle seule faire remonter un profil
+hors sujet (un développeur à Abidjan sur une demande de plomberie). Avec un
+filtre, elle ne fait jamais gagner de terrain à un candidat non pertinent :
+elle décide seulement qui est éligible, la pertinence décide seule du reste.
+Si le filtre ne laisse personne, le client garde la main : il peut élargir sa
+demande au grand public (cf. `can_go_public` dans le routeur).
 """
 
 from __future__ import annotations
@@ -21,11 +38,11 @@ import unicodedata
 import re
 from datetime import datetime, timezone
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.orm import Session
 
 from app.models.service import (
-    MatchDecision, MatchSource, ProviderStatus, ServiceProvider,
+    DeliveryMode, MatchDecision, MatchSource, ProviderStatus, ServiceProvider,
     ServiceRequest, ServiceRequestMatch,
 )
 from app.models.user import Profile, User
@@ -34,15 +51,7 @@ from app.services.embedding_service import get_embedding_service
 # Primitives partagées avec le matching d'offres. Importées volontairement
 # plutôt que réécrites : toute correction faite là-bas (pondération titre,
 # frontières de mot, bonus de corroboration borné) vaut automatiquement ici.
-from app.services.scraped_offer_service import (
-    MATCH_MODE_LEXICAL,
-    MATCH_MODE_SEMANTIC,
-    _PROFILE_WEIGHT,
-    _RELEVANCE_WEIGHT,
-    _contains_word,
-    _fuse_results,
-    _term_coverage,
-)
+from app.services.scraped_offer_service import MATCH_MODE_LEXICAL, MATCH_MODE_SEMANTIC, _fuse_results, _term_coverage
 
 logger = logging.getLogger(__name__)
 
@@ -50,23 +59,38 @@ logger = logging.getLogger(__name__)
 # partirait à tout le monde et brûlerait le réseau dès la première semaine.
 MAX_RECIPIENTS_PER_WAVE = 8
 
-# Vivier interrogé avant scoring — large, car le filtrage géographique et le
-# classement fin se font ensuite en Python.
+# Vivier interrogé avant scoring — large, car le classement fin se fait
+# ensuite en Python. Le filtrage géographique, lui, a déjà eu lieu en SQL :
+# ce plafond porte donc uniquement sur des candidats déjà éligibles.
 _CANDIDATE_POOL = MAX_RECIPIENTS_PER_WAVE * 6
 
 # Seuil sous lequel on ne sollicite personne : mieux vaut proposer au client
 # d'élargir que de notifier des prestataires hors sujet, qui se désabonneront.
+# Porte uniquement sur la pertinence désormais, la géographie étant un filtre
+# préalable et non plus une composante du score.
 MIN_MATCH_SCORE = 25.0
 
-# Pertinence minimale au besoin exprimé, indépendamment de tout bonus.
-#
-# Sans ce garde-fou, la proximité géographique seule suffisait à franchir
-# MIN_MATCH_SCORE : un développeur web à Abidjan obtenait 33 points sur une
-# demande de plomberie, uniquement parce qu'il était dans la bonne ville.
-# La géographie doit départager des candidats pertinents, jamais en qualifier
-# un qui ne l'est pas — même règle que le bonus de corroboration du matching
-# d'offres, qui ne peut pas renverser un écart de pertinence réel.
-MIN_RELEVANCE = 0.15
+
+def _apply_geo_filter(
+    query, request: ServiceRequest, *, city_col: ColumnElement, country_col: ColumnElement,
+):
+    """Restreint une requête SQL au pays/ville voulus par le client, si voulus.
+
+    Générique sur la colonne à filtrer : sert aussi bien pour les vitrines
+    prestataires (`ServiceProvider`) que pour les profils du grand public
+    (`Profile`), qui portent chacun leurs propres colonnes ville/pays.
+
+    Une comparaison qui porte sur une colonne NULL ne satisfait jamais un
+    filtre SQL — un profil sans ville renseignée est donc naturellement exclu
+    dès qu'une ville est exigée, sans traitement particulier à écrire.
+    """
+    if request.delivery_mode == DeliveryMode.remote:
+        return query
+    if request.country:
+        query = query.where(func.lower(country_col) == request.country.strip().lower())
+    if request.city:
+        query = query.where(city_col.ilike(f"%{request.city.strip()}%"))
+    return query
 
 
 def _normalize_title(text: str) -> str:
@@ -109,19 +133,6 @@ def embedding_text(*, title: str, description: str, keywords: list | None,
     return "\n".join(p for p in parts if p)
 
 
-def _geo_bonus(*, request: ServiceRequest, city: str | None, country: str | None) -> float:
-    """Proximité géographique, dans [0, 1].
-
-    Volontairement tolérant : beaucoup de prestations se font à distance, et
-    une ville non renseignée ne doit pas exclure un bon profil.
-    """
-    if request.city and city and _contains_word(city.lower(), request.city.lower()):
-        return 1.0
-    if request.country and country and country.strip().lower() == request.country.strip().lower():
-        return 0.6
-    return 0.0
-
-
 class _Candidate:
     """Adaptateur minimal exposant les attributs attendus par `_term_coverage`."""
 
@@ -134,27 +145,22 @@ class _Candidate:
 
 
 def _score(
-    *, request: ServiceRequest, terms: list[str],
+    *, terms: list[str],
     title: str | None, normalized_title: str | None, description: str | None,
-    city: str | None, country: str | None,
     cosine: float | None = None,
 ) -> float:
-    """Score 0–100, même composition que le matching d'offres.
+    """Score 0–100, pure pertinence au besoin exprimé.
 
-    Deux tiers pour la pertinence au besoin exprimé, un tiers pour le contexte
-    (ici la proximité géographique). Conserver ce ratio garantit que les seuils
-    et les pourcentages affichés restent comparables d'un module à l'autre.
+    La géographie n'entre plus dans le score : elle a déjà filtré les
+    candidats en amont (`_apply_geo_filter`) quand le client l'a demandé. Un
+    candidat qui atteint ce point a déjà passé ce filtre — le score ne
+    départage donc plus que sur la compétence, jamais sur la localisation.
     """
     relevance = (
         cosine if cosine is not None
         else _term_coverage(_Candidate(title, normalized_title, description), terms)
     )
-    # Sans pertinence minimale au besoin, aucun bonus ne rattrape : un profil
-    # hors sujet dans la bonne ville reste hors sujet.
-    if relevance < MIN_RELEVANCE:
-        return 0.0
-    geo = _geo_bonus(request=request, city=city, country=country)
-    return 100.0 * (_RELEVANCE_WEIGHT * relevance + _PROFILE_WEIGHT * geo)
+    return 100.0 * relevance
 
 
 class ServiceMatchingService:
@@ -209,12 +215,14 @@ class ServiceMatchingService:
             ServiceProvider.status == ProviderStatus.published,
             ServiceProvider.user_id != request.requester_id,
         )
+        base = _apply_geo_filter(
+            base, request, city_col=ServiceProvider.city, country_col=ServiceProvider.country,
+        )
         results: list[dict] = []
         for p in self.db.execute(base.limit(_CANDIDATE_POOL)).scalars().all():
             score = _score(
-                request=request, terms=terms,
+                terms=terms,
                 title=p.title, normalized_title=p.normalized_title, description=p.description,
-                city=p.city, country=p.country,
             )
             if score >= MIN_MATCH_SCORE:
                 results.append(self._as_result(p, score, MATCH_MODE_LEXICAL))
@@ -224,7 +232,6 @@ class ServiceMatchingService:
             "[ServiceMatching] demande=%s lexical : %d retenu(s)", request.id, len(results[:limit]),
         )
         return results[:limit]
-
 
     async def match_providers(
         self, request: ServiceRequest, *, limit: int = MAX_RECIPIENTS_PER_WAVE,
@@ -243,13 +250,15 @@ class ServiceMatchingService:
             ServiceProvider.status == ProviderStatus.published,
             ServiceProvider.user_id != request.requester_id,
         )
+        base = _apply_geo_filter(
+            base, request, city_col=ServiceProvider.city, country_col=ServiceProvider.country,
+        )
 
         lexical: list[dict] = []
         for p in self.db.execute(base.limit(_CANDIDATE_POOL)).scalars().all():
             score = _score(
-                request=request, terms=terms,
+                terms=terms,
                 title=p.title, normalized_title=p.normalized_title, description=p.description,
-                city=p.city, country=p.country,
             )
             lexical.append(self._as_result(p, score, MATCH_MODE_LEXICAL))
 
@@ -265,9 +274,9 @@ class ServiceMatchingService:
             for p, d in rows:
                 cosine = max(0.0, 1.0 - float(d))
                 score = _score(
-                    request=request, terms=terms,
+                    terms=terms,
                     title=p.title, normalized_title=p.normalized_title, description=p.description,
-                    city=p.city, country=p.country, cosine=cosine,
+                    cosine=cosine,
                 )
                 semantic.append(self._as_result(p, score, MATCH_MODE_SEMANTIC))
 
@@ -318,9 +327,14 @@ class ServiceMatchingService:
             ).all()
         }
 
+        # Même filtre géographique que pour les vitrines : un profil sans
+        # ville/pays renseigné ne peut pas prouver qu'il est dans la zone
+        # demandée, et une comparaison sur colonne NULL ne satisfait jamais
+        # le filtre — il est donc naturellement exclu, sans cas particulier.
+        query = select(UserIntent, Profile).outerjoin(Profile, Profile.user_id == UserIntent.user_id)
+        query = _apply_geo_filter(query, request, city_col=Profile.city, country_col=Profile.country)
         rows = self.db.execute(
-            select(UserIntent, Profile)
-            .outerjoin(Profile, Profile.user_id == UserIntent.user_id)
+            query
             .where(UserIntent.user_id != request.requester_id)
             .order_by(UserIntent.extracted_at.desc())
             .limit(_CANDIDATE_POOL * 3)
@@ -331,14 +345,12 @@ class ServiceMatchingService:
             if intent.user_id in already:
                 continue
             score = _score(
-                request=request, terms=terms,
+                terms=terms,
                 title=intent.domain or "",
                 normalized_title=None,
                 description=" ".join(
                     filter(None, [intent.intent_summary, " ".join(intent.keywords or [])])
                 ),
-                city=profile.city if profile else None,
-                country=profile.country if profile else None,
             )
             if score < MIN_MATCH_SCORE:
                 continue

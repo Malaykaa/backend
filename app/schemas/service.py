@@ -32,14 +32,18 @@ class ProviderUpsert(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: str = Field(min_length=3, max_length=300,
-                       description="Intitulé court, ex. « Plombier · dépannage 24h ».")
+                       description="Intitulé court, ex. « Designer graphique · identité visuelle ».")
     description: str = Field(min_length=20, max_length=5000)
     keywords: list[str] = Field(default_factory=list, max_length=15)
-    delivery_mode: DeliveryMode = Field(
-        description="À distance, en présentiel ou hybride — conditionne la pertinence de la ville.",
+    # Toujours requis : un prestataire est forcément quelque part, contrairement
+    # à une demande qui peut explicitement être à distance. C'est le CLIENT,
+    # jamais le prestataire, qui décide si cette localisation compte.
+    city: str = Field(min_length=1, max_length=100)
+    country: str = Field(min_length=1, max_length=100)
+    portfolio: str | None = Field(
+        default=None, max_length=5000,
+        description="Réalisations passées — texte libre, liens inclus.",
     )
-    city: str | None = Field(default=None, max_length=100)
-    country: str | None = Field(default=None, max_length=100)
     rate_text: str | None = Field(default=None, max_length=200)
     availability_text: str | None = Field(default=None, max_length=200)
     years_experience: int | None = Field(default=None, ge=0, le=70)
@@ -65,9 +69,9 @@ class ProviderResponse(BaseModel):
     title: str
     description: str
     keywords: list[str] = Field(default_factory=list)
-    delivery_mode: DeliveryMode = DeliveryMode.onsite
     city: str | None = None
     country: str | None = None
+    portfolio: str | None = None
     rate_text: str | None = None
     availability_text: str | None = None
     years_experience: int | None = None
@@ -89,9 +93,11 @@ class ProviderPublicCard(BaseModel):
     title: str
     description: str
     keywords: list[str] = Field(default_factory=list)
-    delivery_mode: DeliveryMode = DeliveryMode.onsite
     city: str | None = None
     country: str | None = None
+    portfolio: str | None = Field(
+        default=None, description="Réalisations passées, visibles par le client.",
+    )
     rate_text: str | None = None
     availability_text: str | None = None
     years_experience: int | None = None
@@ -108,11 +114,18 @@ class RequestCreate(BaseModel):
     description: str = Field(min_length=10, max_length=5000)
     keywords: list[str] = Field(default_factory=list, max_length=15)
     delivery_mode: DeliveryMode = Field(
-        description="À distance, en présentiel ou hybride — conditionne la pertinence de la ville.",
+        description=(
+            "À distance, en présentiel ou hybride. Gouverne le filtre géographique du "
+            "matching : à distance, la localisation des prestataires est ignorée."
+        ),
     )
     city: str | None = Field(default=None, max_length=100)
     country: str | None = Field(default=None, max_length=100)
     budget_hint: str | None = Field(default=None, max_length=200)
+    contact_phone: str = Field(
+        min_length=6, max_length=30,
+        description="Numéro auquel vous joindre pour cette demande.",
+    )
 
 
 class MatchCardResponse(BaseModel):
@@ -142,6 +155,7 @@ class RequestResponse(BaseModel):
     city: str | None = None
     country: str | None = None
     budget_hint: str | None = None
+    contact_phone: str | None = None
     status: RequestStatus
     published_public_at: datetime | None = None
     created_at: datetime
