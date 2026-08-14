@@ -43,17 +43,22 @@ class ProviderStatus(str, enum.Enum):
 
 
 class DeliveryMode(str, enum.Enum):
-    """Où la prestation a lieu — conditionne l'utilité de la ville et du pays.
+    """Où la prestation a lieu — décidé par le CLIENT, jamais par le prestataire.
 
-    Une prestation à distance n'a pas de géographie pertinente : demander
-    quand même une ville exclurait à tort des candidats capables de la
-    réaliser depuis n'importe où. C'est le client (ou le prestataire, pour sa
-    vitrine) qui tranche, avant même de voir les champs de localisation.
+    Le prestataire, lui, a toujours une ville et un pays : il faut bien être
+    quelque part. C'est le besoin exprimé par le client qui détermine si cette
+    localisation compte pour cette demande précise — un même prestataire à
+    Abidjan peut très bien répondre à une demande à distance venue d'ailleurs.
+
+    Le mode gouverne le filtrage géographique du matching (`service_matching`) :
+    - `remote`  : aucun filtre — la localisation du prestataire est ignorée ;
+    - `onsite` / `hybrid` : filtre réel sur pays puis ville, avant tout
+      classement par pertinence.
     """
 
-    remote = "remote"    # à distance — ville/pays non pertinents
-    onsite = "onsite"    # en présentiel — ville/pays requis
-    hybrid = "hybrid"    # les deux selon les besoins — ville/pays utiles
+    remote = "remote"    # à distance — la localisation du prestataire est ignorée
+    onsite = "onsite"    # en présentiel — filtré par ville et pays
+    hybrid = "hybrid"    # mixte — filtré par ville et pays, comme le présentiel
 
 
 class RequestType(str, enum.Enum):
@@ -120,12 +125,17 @@ class ServiceProvider(Base):
     # Mots-clés libres saisis par le prestataire — pas de vocabulaire imposé.
     keywords: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
-    delivery_mode: Mapped[DeliveryMode] = mapped_column(
-        Enum(DeliveryMode, name="delivery_mode_enum", create_constraint=False),
-        nullable=False, default=DeliveryMode.onsite,
-    )
+    # Toujours renseignés : un prestataire est forcément quelque part. C'est
+    # le CLIENT qui décide, via `ServiceRequest.delivery_mode`, si cette
+    # localisation compte pour telle demande précise — imposé au niveau du
+    # schéma Pydantic (ProviderUpsert), pas d'une contrainte NOT NULL en base
+    # pour ne pas risquer d'échec de migration sur des lignes déjà existantes.
     city: Mapped[str | None] = mapped_column(String(100), nullable=True)
     country: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    # Réalisations passées — texte libre, liens inclus. Affiché au client sur
+    # la carte publique du prestataire, à côté du reste de la vitrine.
+    portfolio: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Tarif et disponibilité en texte libre : imposer une grille au démarrage
     # exclurait des métiers dont la tarification n'est ni horaire ni journalière.
@@ -189,6 +199,8 @@ class ServiceRequest(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     keywords: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
+    # Choisi par le client — gouverne le filtre géographique du matching,
+    # cf. `DeliveryMode` et `app.services.service_matching`.
     delivery_mode: Mapped[DeliveryMode] = mapped_column(
         Enum(DeliveryMode, name="delivery_mode_enum", create_constraint=False),
         nullable=False, default=DeliveryMode.onsite,
@@ -196,6 +208,11 @@ class ServiceRequest(Base):
     city: Mapped[str | None] = mapped_column(String(100), nullable=True)
     country: Mapped[str | None] = mapped_column(String(100), nullable=True)
     budget_hint: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    # Numéro auquel le client veut être joint pour CETTE demande — peut différer
+    # de son numéro de compte. Révélé au prestataire selon la même règle que le
+    # numéro de vitrine : uniquement après la double validation.
+    contact_phone: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
     status: Mapped[RequestStatus] = mapped_column(
         Enum(RequestStatus, name="request_status_enum", create_constraint=False),

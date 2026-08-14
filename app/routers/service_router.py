@@ -118,9 +118,9 @@ def _provider_card(provider: ServiceProvider, profile: Profile | None) -> Provid
         title=provider.title,
         description=provider.description,
         keywords=list(provider.keywords or []),
-        delivery_mode=provider.delivery_mode,
         city=provider.city,
         country=provider.country,
+        portfolio=provider.portfolio,
         rate_text=provider.rate_text,
         availability_text=provider.availability_text,
         years_experience=provider.years_experience,
@@ -199,9 +199,9 @@ def upsert_my_provider(
     provider.title = payload.title
     provider.description = payload.description
     provider.keywords = payload.keywords
-    provider.delivery_mode = payload.delivery_mode
     provider.city = payload.city
     provider.country = payload.country
+    provider.portfolio = payload.portfolio
     provider.rate_text = payload.rate_text
     provider.availability_text = payload.availability_text
     provider.years_experience = payload.years_experience
@@ -291,6 +291,7 @@ def create_request(
         city=payload.city,
         country=payload.country,
         budget_hint=payload.budget_hint,
+        contact_phone=payload.contact_phone,
         status=RequestStatus.open,
     )
     db.add(req)
@@ -463,7 +464,10 @@ def my_inbox(
             client_display_name=(
                 _display_name(profiles.get(req.requester_id)) if connected else None
             ),
-            client_phone=phones.get(req.requester_id) if connected else None,
+            # Le numéro donné pour CETTE demande prime — c'est celui que le
+            # client a choisi de communiquer ; le numéro de compte ne sert
+            # qu'aux demandes créées avant l'existence de ce champ.
+            client_phone=(req.contact_phone or phones.get(req.requester_id)) if connected else None,
         ))
     return items
 
