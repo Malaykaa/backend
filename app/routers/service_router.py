@@ -12,15 +12,16 @@ revenir sur sa décision une fois la mise en relation faite.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.database import get_db
+from app.core.database import SessionLocal, get_db
 from app.core.deps import get_current_user
 from app.core.exceptions import BadRequestError, ForbiddenError, NotFoundError
 from app.models.notification import UserNotification
@@ -34,9 +35,69 @@ from app.schemas.service import (
     ProviderPublishRequest, ProviderResponse, ProviderUpsert,
     RequestCreate, RequestDetailResponse, RequestResponse,
 )
-from app.services.service_matching import ServiceMatchingService
+from app.services.service_matching import ServiceMatchingService, _normalize_title
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/services", tags=["services"])
+
+
+# ── Indexation sémantique, hors du chemin de requête ────────────────────────
+#
+# L'embedding passe par un appel HTTP externe (Perplexity) qui peut mettre
+# plusieurs secondes, échouer, ou expirer. L'attendre avant de répondre rendait
+# l'enregistrement d'une vitrine dépendant de la disponibilité d'un tiers :
+# quota dépassé ou réseau lent, et l'utilisateur voyait « impossible
+# d'enregistrer » alors que ses données étaient valides.
+#
+# On enregistre d'abord, on indexe ensuite. Une vitrine non encore indexée
+# reste trouvable par la voie lexicale — la dégradation est invisible.
+
+
+async def _index_provider_bg(provider_id: uuid.UUID) -> None:
+    db = SessionLocal()
+    try:
+        p = db.get(ServiceProvider, provider_id)
+        if p is None:
+            return
+        await ServiceMatchingService(db).index_provider(p)
+        db.commit()
+    except Exception:
+        logger.warning("[Services] indexation vitrine %s échouée", provider_id, exc_info=True)
+        db.rollback()
+    finally:
+        db.close()
+
+
+async def _index_and_rematch_bg(request_id: uuid.UUID) -> None:
+    """Indexe la demande, puis complète le matching par la voie sémantique.
+
+    Le premier tour lexical a déjà eu lieu et le client a déjà vu des profils :
+    ce second passage ne fait qu'ajouter les prestataires que seuls les
+    embeddings savent trouver.
+    """
+    db = SessionLocal()
+    try:
+        req = db.get(ServiceRequest, request_id)
+        if req is None:
+            return
+        svc = ServiceMatchingService(db)
+        await svc.index_request(req)
+        db.commit()
+
+        if req.embedding is None:
+            return
+        created = svc.create_matches(
+            req, await svc.match_providers(req), MatchSource.provider
+        )
+        for m in created:
+            _notify(db, m.user_id, f"Nouvelle demande : {req.title}")
+        db.commit()
+    except Exception:
+        logger.warning("[Services] indexation demande %s échouée", request_id, exc_info=True)
+        db.rollback()
+    finally:
+        db.close()
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -118,8 +179,9 @@ def get_my_provider(
 
 
 @router.put("/provider/me", response_model=ProviderResponse)
-async def upsert_my_provider(
+def upsert_my_provider(
     payload: ProviderUpsert,
+    background: BackgroundTasks,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ):
@@ -143,12 +205,15 @@ async def upsert_my_provider(
     provider.years_experience = payload.years_experience
     provider.contact_phone = payload.contact_phone or current_user.phone
 
-    # Ré-indexation à chaque modification : une vitrine dont le texte a changé
-    # doit être retrouvée sur ses nouveaux termes dès la demande suivante.
-    await ServiceMatchingService(db).index_provider(provider)
+    # Le titre normalisé est calculé ici — c'est du texte, pas un appel réseau,
+    # et il conditionne la recherche lexicale qui doit marcher immédiatement.
+    provider.normalized_title = _normalize_title(provider.title) or None
 
     db.commit()
     db.refresh(provider)
+
+    # L'embedding part en tâche de fond : la réponse ne l'attend pas.
+    background.add_task(_index_provider_bg, provider.id)
     return provider
 
 
@@ -203,8 +268,9 @@ def unpublish_my_provider(
 
 
 @router.post("/requests", response_model=RequestDetailResponse, status_code=201)
-async def create_request(
+def create_request(
     payload: RequestCreate,
+    background: BackgroundTasks,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ):
@@ -227,16 +293,21 @@ async def create_request(
     db.add(req)
     db.flush()
 
+    # Matching lexical immédiat : il ne dépend d'aucun service externe, et le
+    # client doit voir des profils tout de suite — une page vide le ferait
+    # partir. La voie sémantique complètera en tâche de fond.
+    req.normalized_title = _normalize_title(req.title) or None
     svc = ServiceMatchingService(db)
-    await svc.index_request(req)
-
-    results = await svc.match_providers(req)
-    created = svc.create_matches(req, results, MatchSource.provider)
+    created = svc.create_matches(
+        req, svc.match_providers_lexical(req), MatchSource.provider
+    )
     for m in created:
         _notify(db, m.user_id, f"Nouvelle demande : {req.title}")
 
     db.commit()
     db.refresh(req)
+
+    background.add_task(_index_and_rematch_bg, req.id)
     return _build_detail(db, req)
 
 
