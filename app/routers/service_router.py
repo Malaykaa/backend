@@ -118,6 +118,7 @@ def _provider_card(provider: ServiceProvider, profile: Profile | None) -> Provid
         title=provider.title,
         description=provider.description,
         keywords=list(provider.keywords or []),
+        delivery_mode=provider.delivery_mode,
         city=provider.city,
         country=provider.country,
         rate_text=provider.rate_text,
@@ -198,6 +199,7 @@ def upsert_my_provider(
     provider.title = payload.title
     provider.description = payload.description
     provider.keywords = payload.keywords
+    provider.delivery_mode = payload.delivery_mode
     provider.city = payload.city
     provider.country = payload.country
     provider.rate_text = payload.rate_text
@@ -285,6 +287,7 @@ def create_request(
         title=payload.title,
         description=payload.description,
         keywords=payload.keywords,
+        delivery_mode=payload.delivery_mode,
         city=payload.city,
         country=payload.country,
         budget_hint=payload.budget_hint,
@@ -450,6 +453,7 @@ def my_inbox(
             request_type=req.request_type,
             title=req.title,
             description=req.description,
+            delivery_mode=req.delivery_mode,
             city=req.city,
             country=req.country,
             budget_hint=req.budget_hint,

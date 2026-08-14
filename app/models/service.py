@@ -42,6 +42,20 @@ class ProviderStatus(str, enum.Enum):
     suspended = "suspended"  # retirée par un administrateur (modération)
 
 
+class DeliveryMode(str, enum.Enum):
+    """Où la prestation a lieu — conditionne l'utilité de la ville et du pays.
+
+    Une prestation à distance n'a pas de géographie pertinente : demander
+    quand même une ville exclurait à tort des candidats capables de la
+    réaliser depuis n'importe où. C'est le client (ou le prestataire, pour sa
+    vitrine) qui tranche, avant même de voir les champs de localisation.
+    """
+
+    remote = "remote"    # à distance — ville/pays non pertinents
+    onsite = "onsite"    # en présentiel — ville/pays requis
+    hybrid = "hybrid"    # les deux selon les besoins — ville/pays utiles
+
+
 class RequestType(str, enum.Enum):
     """Nature du besoin — change le vocabulaire de l'interface, pas le matching."""
 
@@ -106,6 +120,10 @@ class ServiceProvider(Base):
     # Mots-clés libres saisis par le prestataire — pas de vocabulaire imposé.
     keywords: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
+    delivery_mode: Mapped[DeliveryMode] = mapped_column(
+        Enum(DeliveryMode, name="delivery_mode_enum", create_constraint=False),
+        nullable=False, default=DeliveryMode.onsite,
+    )
     city: Mapped[str | None] = mapped_column(String(100), nullable=True)
     country: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
@@ -171,6 +189,10 @@ class ServiceRequest(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     keywords: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
+    delivery_mode: Mapped[DeliveryMode] = mapped_column(
+        Enum(DeliveryMode, name="delivery_mode_enum", create_constraint=False),
+        nullable=False, default=DeliveryMode.onsite,
+    )
     city: Mapped[str | None] = mapped_column(String(100), nullable=True)
     country: Mapped[str | None] = mapped_column(String(100), nullable=True)
     budget_hint: Mapped[str | None] = mapped_column(String(200), nullable=True)
