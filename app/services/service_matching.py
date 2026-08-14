@@ -193,6 +193,39 @@ class ServiceMatchingService:
 
     # ── Vivier 1 : les vitrines publiées ─────────────────────────────────────
 
+    def match_providers_lexical(
+        self, request: ServiceRequest, *, limit: int = MAX_RECIPIENTS_PER_WAVE,
+    ) -> list[dict]:
+        """Variante purement lexicale — aucun appel réseau, réponse immédiate.
+
+        Utilisée sur le chemin de requête, là où l'utilisateur attend. La voie
+        sémantique passe ensuite en tâche de fond : elle ajoute des candidats
+        sans jamais retarder la réponse.
+        """
+        terms = build_search_terms(
+            title=request.title, description=request.description, keywords=request.keywords,
+        )
+        base = select(ServiceProvider).where(
+            ServiceProvider.status == ProviderStatus.published,
+            ServiceProvider.user_id != request.requester_id,
+        )
+        results: list[dict] = []
+        for p in self.db.execute(base.limit(_CANDIDATE_POOL)).scalars().all():
+            score = _score(
+                request=request, terms=terms,
+                title=p.title, normalized_title=p.normalized_title, description=p.description,
+                city=p.city, country=p.country,
+            )
+            if score >= MIN_MATCH_SCORE:
+                results.append(self._as_result(p, score, MATCH_MODE_LEXICAL))
+
+        results.sort(key=lambda r: r["match_score"], reverse=True)
+        logger.info(
+            "[ServiceMatching] demande=%s lexical : %d retenu(s)", request.id, len(results[:limit]),
+        )
+        return results[:limit]
+
+
     async def match_providers(
         self, request: ServiceRequest, *, limit: int = MAX_RECIPIENTS_PER_WAVE,
     ) -> list[dict]:
