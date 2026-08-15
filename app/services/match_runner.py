@@ -444,6 +444,17 @@ class MatchRunner:
                 "MatchRunner: %d notification(s) haute-pertinence créée(s) pour user %s",
                 created, user_id,
             )
+            # Un seul push résumant le lot plutôt qu'un par offre : les
+            # meilleures correspondances sont déjà peu nombreuses
+            # (`match_top_k`), mais en envoyer une par notification
+            # spammerait l'utilisateur pour ce qui reste un seul événement
+            # de son point de vue — « de nouvelles offres sont arrivées ».
+            from app.services.push_service import send_push
+            title = (
+                "Une nouvelle offre vous correspond" if created == 1
+                else f"{created} nouvelles offres vous correspondent"
+            )
+            send_push(self.db, user_id=user_id, title=title, url="/app/pour-moi")
 
     def _mark_run(self, user_id: uuid.UUID, now: datetime) -> None:
         self.db.execute(

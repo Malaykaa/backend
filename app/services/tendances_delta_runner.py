@@ -284,6 +284,9 @@ class TendancesDeltaRunner:
                 self.db.add(notif)
                 self.db.flush()
 
+                from app.services.push_service import send_push
+                send_push(self.db, user_id=user.id, title=title, url="/app/tendances")
+
                 # Mettre à jour t0 → t1
                 _save_snapshot(str(user.id), t1)
                 stats["notified"] += 1

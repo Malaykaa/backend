@@ -104,6 +104,14 @@ class Settings(BaseSettings):
     # URL publique du frontend (liens dans les notifications WhatsApp)
     frontend_url: str = "http://localhost:5175"
 
+    # Notifications push web (PWA) — clés VAPID, générées une fois pour
+    # l'application (pas par utilisateur). Sans elles, `push_service` se
+    # contente de ne rien envoyer : les notifications in-app continuent de
+    # fonctionner normalement, seul le push est absent.
+    vapid_public_key: str | None = None
+    vapid_private_key: str | None = None
+    vapid_claim_email: str = "contact@malayka.co"
+
     # Redis
     redis_url: str = "redis://localhost:6379/0"
 

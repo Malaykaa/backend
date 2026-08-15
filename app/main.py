@@ -14,7 +14,7 @@ from app.core.logging_config import bind_request_context, configure_logging
 from app.core.rate_limit import limiter
 from app.routers import auth, documents, files, goals, opportunities, plans, tracking, users
 from app.routers import action_adapter, admin_scraping, admin_router, chat, recommendations_router, trends, notifications
-from app.routers import admin_service_router, service_router, structure_router
+from app.routers import admin_service_router, push_router, service_router, structure_router
 
 settings = get_settings()
 
@@ -105,6 +105,7 @@ app.include_router(structure_router.router)
 # Mise en relation prestataires ↔ clients
 app.include_router(service_router.router)
 app.include_router(admin_service_router.router)
+app.include_router(push_router.router)
 
 
 
