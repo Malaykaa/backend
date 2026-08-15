@@ -12,6 +12,7 @@ from app.models.user_offer_feedback import UserOfferFeedback, FeedbackAction  # 
 from app.models.scraping_source import ScrapingSource  # noqa: F401
 from app.models.scraping_actor import ScrapingActor   # noqa: F401
 from app.models.notification import UserNotification  # noqa: F401
+from app.models.push_subscription import PushSubscription  # noqa: F401
 from app.models.service import (  # noqa: F401
     ServiceProvider, ServiceRequest, ServiceRequestMatch,
     ProviderStatus, RequestType, RequestStatus, MatchDecision, MatchSource,

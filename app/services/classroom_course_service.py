@@ -176,13 +176,16 @@ def _materialize_recipient(db: Session, course: ClassroomCourse, user_id: uuid.U
         f"Nouveau plan personnalisé : {course.title}" if course.kind == ClassroomCourseKind.evolution_plan
         else f"Nouveau cours : {course.title}"
     )
+    notif_url = _notification_url(thread.id)
     db.add(UserNotification(
         user_id=user_id, offer_id=None,
         offer_title=notif_title,
-        offer_url=_notification_url(thread.id),
+        offer_url=notif_url,
         offer_type="course_assigned",
         score_pct=None, seen=False,
     ))
+    from app.services.push_service import send_push
+    send_push(db, user_id=user_id, title=notif_title, url=notif_url)
 
     db.flush()
     return recipient

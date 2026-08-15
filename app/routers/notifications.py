@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.deps import get_current_user
+from app.core.exceptions import NotFoundError
 from app.models.notification import UserNotification
 from app.models.user import User
 
@@ -35,6 +36,28 @@ def get_notifications(
         "notifications": [_serialize(n) for n in rows],
         "unread_count": sum(1 for n in rows if not n.seen),
     }
+
+
+@router.get("/{notification_id}")
+def get_notification(
+    notification_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    """Une notification, pour la page de détail — pas de liste tronquée.
+
+    N'existe que pour donner accès à la ligne au complet (titre non coupé,
+    date, type) : le tiroir de notifications n'affiche qu'un aperçu compact.
+    """
+    n = db.execute(
+        select(UserNotification).where(
+            UserNotification.id == notification_id,
+            UserNotification.user_id == current_user.id,
+        )
+    ).scalar_one_or_none()
+    if not n:
+        raise NotFoundError("Notification")
+    return _serialize(n)
 
 
 @router.post("/mark-read")

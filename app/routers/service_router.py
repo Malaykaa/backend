@@ -35,6 +35,7 @@ from app.schemas.service import (
     ProviderPublishRequest, ProviderResponse, ProviderUpsert,
     RequestCreate, RequestDetailResponse, RequestResponse, RequestUpdate,
 )
+from app.services.push_service import send_push
 from app.services.service_matching import ServiceMatchingService, _normalize_title
 
 logger = logging.getLogger(__name__)
@@ -91,7 +92,10 @@ async def _index_and_rematch_bg(request_id: uuid.UUID) -> None:
             req, await svc.match_providers(req), MatchSource.provider
         )
         for m in created:
-            _notify(db, m.user_id, f"Nouvelle demande : {req.title}")
+            _notify(
+                db, m.user_id, f"Nouvelle demande : {req.title}",
+                url="/app/services/prestataire", notif_type="service_new_request",
+            )
         db.commit()
     except Exception:
         logger.warning("[Services] indexation demande %s échouée", request_id, exc_info=True)
@@ -151,9 +155,44 @@ def _load_profiles(db: Session, user_ids: list[uuid.UUID]) -> dict[uuid.UUID, Pr
     return {p.user_id: p for p in rows}
 
 
-def _notify(db: Session, user_id: uuid.UUID, title: str) -> None:
-    """Notification in-app — réutilise le canal existant des offres matchées."""
-    db.add(UserNotification(user_id=user_id, offer_title=title[:500], seen=False))
+async def _send_push_bg(user_id: uuid.UUID, title: str, url: str | None) -> None:
+    db = SessionLocal()
+    try:
+        send_push(db, user_id=user_id, title=title, url=url)
+    except Exception:
+        logger.warning("[Push] envoi en tâche de fond échoué", exc_info=True)
+    finally:
+        db.close()
+
+
+def _notify(
+    db: Session, user_id: uuid.UUID, title: str, *,
+    url: str | None = None, notif_type: str | None = None,
+    background: BackgroundTasks | None = None,
+) -> None:
+    """Notification in-app — réutilise le canal existant des offres matchées.
+
+    `url` porte un chemin interne (`/app/services/...`) vers ce dont parle la
+    notification, exactement comme le fait déjà `course_assigned` pour les
+    cours assignés (`/app/chat/{thread_id}`). C'est ce chemin qui permet au
+    clic sur la notification d'ouvrir directement la bonne demande ou la
+    bonne boîte de réception, plutôt qu'une notification muette sans suite.
+
+    Doublée d'un envoi push. Passer `background` quand l'appelant est un
+    endpoint HTTP : l'envoi (un appel réseau par appareil abonné) part alors
+    en tâche de fond, pour ne jamais faire attendre la réponse à
+    l'utilisateur qui vient d'agir — même défaut que celui déjà corrigé pour
+    l'indexation des vitrines. Omis (donc `None`) quand `_notify` est déjà
+    appelé depuis une tâche de fond : rien n'attend plus la requête, l'envoi
+    peut se faire directement.
+    """
+    db.add(UserNotification(
+        user_id=user_id, offer_title=title[:500], offer_url=url, offer_type=notif_type, seen=False,
+    ))
+    if background is not None:
+        background.add_task(_send_push_bg, user_id, title, url)
+    else:
+        send_push(db, user_id=user_id, title=title, url=url)
 
 
 def _get_own_request(db: Session, request_id: uuid.UUID, user: User) -> ServiceRequest:
@@ -306,7 +345,11 @@ def create_request(
         req, svc.match_providers_lexical(req), MatchSource.provider
     )
     for m in created:
-        _notify(db, m.user_id, f"Nouvelle demande : {req.title}")
+        _notify(
+            db, m.user_id, f"Nouvelle demande : {req.title}",
+            url="/app/services/prestataire", notif_type="service_new_request",
+            background=background,
+        )
 
     db.commit()
     db.refresh(req)
@@ -388,6 +431,7 @@ def update_request(
 @router.post("/requests/{request_id}/go-public", response_model=RequestDetailResponse)
 def go_public(
     request_id: uuid.UUID,
+    background: BackgroundTasks,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ):
@@ -405,7 +449,11 @@ def go_public(
     svc = ServiceMatchingService(db)
     created = svc.create_matches(req, svc.match_public(req), MatchSource.public)
     for m in created:
-        _notify(db, m.user_id, f"Une demande correspond à votre objectif : {req.title}")
+        _notify(
+            db, m.user_id, f"Une demande correspond à votre objectif : {req.title}",
+            url="/app/services/prestataire", notif_type="service_new_request",
+            background=background,
+        )
 
     req.status = RequestStatus.public
     req.published_public_at = req.published_public_at or datetime.now(timezone.utc)
@@ -420,6 +468,7 @@ def client_decide(
     request_id: uuid.UUID,
     match_id: uuid.UUID,
     payload: DecisionRequest,
+    background: BackgroundTasks,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ):
@@ -444,7 +493,11 @@ def client_decide(
 
     if payload.accept:
         req.status = RequestStatus.fulfilled
-        _notify(db, match.user_id, f"Vous avez été retenu : {req.title}")
+        _notify(
+            db, match.user_id, f"Vous avez été retenu : {req.title}",
+            url="/app/services/prestataire", notif_type="service_selected",
+            background=background,
+        )
 
     db.commit()
     db.refresh(req)
@@ -525,6 +578,7 @@ def my_inbox(
 def provider_decide(
     match_id: uuid.UUID,
     payload: DecisionRequest,
+    background: BackgroundTasks,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ):
@@ -548,7 +602,11 @@ def provider_decide(
 
     req = db.get(ServiceRequest, match.request_id)
     if payload.accept and req:
-        _notify(db, req.requester_id, f"Un prestataire a accepté : {req.title}")
+        _notify(
+            db, req.requester_id, f"Un prestataire a accepté : {req.title}",
+            url=f"/app/services/demandes/{req.id}", notif_type="service_provider_accepted",
+            background=background,
+        )
 
     db.commit()
 
