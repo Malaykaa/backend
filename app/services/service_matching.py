@@ -71,6 +71,44 @@ _CANDIDATE_POOL = MAX_RECIPIENTS_PER_WAVE * 6
 MIN_MATCH_SCORE = 25.0
 
 
+def _flatten_json_field(value) -> list[str]:
+    """Extrait des termes texte d'un champ `skills`/`goals` — dict ou liste.
+
+    Ces deux champs de `Profile` n'ont jamais eu de forme unique : selon
+    l'étape d'inscription qui les a écrits, ce sont des listes de chaînes ou
+    des dictionnaires (`{"Python": "avancé"}`). On prend tout ce qui est
+    exploitable des deux côtés — clés et valeurs — plutôt que de parier sur
+    une forme précise et perdre l'information si elle ne correspond pas.
+    """
+    if isinstance(value, dict):
+        return [str(v) for v in list(value.keys()) + list(value.values()) if v]
+    if isinstance(value, list):
+        return [str(v) for v in value if v]
+    return []
+
+
+def _profile_text(profile: Profile | None) -> str:
+    """Ce qu'un utilisateur du grand public a déclaré à l'inscription.
+
+    Le matching grand public (`match_public`) ne se basait jusqu'ici que sur
+    les intentions déclarées (`UserIntent`) — un texte court, généré à partir
+    d'un seul échange. Un utilisateur peut très bien correspondre à une
+    demande sans que son intention la plus récente le montre : son domaine,
+    ses compétences ou ses objectifs déclarés à l'inscription en disent
+    souvent plus, et ne coûtent rien à interroger puisque le profil est déjà
+    chargé pour le filtre géographique.
+    """
+    if not profile:
+        return ""
+    parts = [
+        profile.domain, profile.field_of_study, profile.current_status,
+        profile.preferred_content,
+        *_flatten_json_field(profile.skills),
+        *_flatten_json_field(profile.goals),
+    ]
+    return " ".join(p for p in parts if p)
+
+
 def _apply_geo_filter(
     query, request: ServiceRequest, *, city_col: ColumnElement, country_col: ColumnElement,
 ):
@@ -344,13 +382,19 @@ class ServiceMatchingService:
         for intent, profile in rows:
             if intent.user_id in already:
                 continue
+            # L'intention la plus récente prime pour le titre — c'est le signal
+            # le plus direct. Le profil vient l'épauler dans la description :
+            # une personne peut correspondre par ce qu'elle a déclaré à
+            # l'inscription (domaine, compétences, objectifs) sans que ça
+            # ressorte de sa toute dernière intention.
+            description = " ".join(filter(None, [
+                intent.intent_summary, " ".join(intent.keywords or []), _profile_text(profile),
+            ]))
             score = _score(
                 terms=terms,
                 title=intent.domain or "",
                 normalized_title=None,
-                description=" ".join(
-                    filter(None, [intent.intent_summary, " ".join(intent.keywords or [])])
-                ),
+                description=description,
             )
             if score < MIN_MATCH_SCORE:
                 continue

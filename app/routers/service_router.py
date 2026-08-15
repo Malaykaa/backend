@@ -26,14 +26,14 @@ from app.core.deps import get_current_user
 from app.core.exceptions import BadRequestError, ForbiddenError, NotFoundError
 from app.models.notification import UserNotification
 from app.models.service import (
-    MatchDecision, MatchSource, ProviderStatus, RequestStatus,
+    DeliveryMode, MatchDecision, MatchSource, ProviderStatus, RequestStatus,
     ServiceProvider, ServiceRequest, ServiceRequestMatch,
 )
 from app.models.user import Profile, User
 from app.schemas.service import (
     DecisionRequest, MatchCardResponse, ProviderInboxItem, ProviderPublicCard,
     ProviderPublishRequest, ProviderResponse, ProviderUpsert,
-    RequestCreate, RequestDetailResponse, RequestResponse,
+    RequestCreate, RequestDetailResponse, RequestResponse, RequestUpdate,
 )
 from app.services.service_matching import ServiceMatchingService, _normalize_title
 
@@ -334,6 +334,55 @@ def get_request(
     db: Annotated[Session, Depends(get_db)],
 ):
     return _build_detail(db, _get_own_request(db, request_id, current_user))
+
+
+@router.patch("/requests/{request_id}", response_model=RequestDetailResponse)
+def update_request(
+    request_id: uuid.UUID,
+    payload: RequestUpdate,
+    background: BackgroundTasks,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    """Modifie une demande déjà publiée.
+
+    Interdit une fois qu'un prestataire a été retenu ou que le client a
+    clôturé : à ce stade, changer le contenu tromperait la personne déjà
+    engagée sur une base différente. Reste ouvert tant que la demande
+    cherche encore — y compris après élargissement au grand public.
+
+    Ne notifie jamais les prestataires déjà sollicités : seule une nouvelle
+    passe de matching en tâche de fond peut en trouver de nouveaux, les
+    autres ne sont pas dérangés pour un changement qu'ils ne verront jamais.
+    """
+    req = _get_own_request(db, request_id, current_user)
+    if req.status not in (RequestStatus.open, RequestStatus.public):
+        raise BadRequestError(
+            "Cette demande ne peut plus être modifiée — un prestataire a déjà "
+            "été retenu, ou elle est clôturée."
+        )
+
+    data = payload.model_dump(exclude_unset=True)
+    for field, value in data.items():
+        setattr(req, field, value)
+
+    # À distance, la ville et le pays ne veulent plus rien dire — même règle
+    # qu'à la création, qu'ils aient été fournis dans cette mise à jour ou
+    # qu'ils traînent d'un état antérieur de la demande.
+    if req.delivery_mode == DeliveryMode.remote:
+        req.city = None
+        req.country = None
+
+    if "title" in data:
+        req.normalized_title = _normalize_title(req.title) or None
+
+    db.commit()
+    db.refresh(req)
+
+    # Le contenu a changé : ré-indexer pour que la recherche sémantique et un
+    # éventuel élargissement au grand public reflètent la nouvelle version.
+    background.add_task(_index_and_rematch_bg, req.id)
+    return _build_detail(db, req)
 
 
 @router.post("/requests/{request_id}/go-public", response_model=RequestDetailResponse)

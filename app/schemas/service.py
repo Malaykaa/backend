@@ -128,6 +128,28 @@ class RequestCreate(BaseModel):
     )
 
 
+class RequestUpdate(BaseModel):
+    """Modification d'une demande déjà publiée.
+
+    Tous les champs sont optionnels — seuls ceux fournis sont modifiés. Ne
+    couvre que le contenu, jamais le statut ni les rapprochements déjà
+    établis : une demande retenue ou clôturée n'est plus modifiable, cf.
+    la vérification faite dans le routeur.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_type: RequestType | None = None
+    title: str | None = Field(default=None, min_length=3, max_length=300)
+    description: str | None = Field(default=None, min_length=10, max_length=5000)
+    keywords: list[str] | None = Field(default=None, max_length=15)
+    delivery_mode: DeliveryMode | None = None
+    city: str | None = Field(default=None, max_length=100)
+    country: str | None = Field(default=None, max_length=100)
+    budget_hint: str | None = Field(default=None, max_length=200)
+    contact_phone: str | None = Field(default=None, min_length=6, max_length=30)
+
+
 class MatchCardResponse(BaseModel):
     """Un rapprochement, vu par le client."""
 
