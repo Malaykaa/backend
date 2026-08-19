@@ -306,6 +306,23 @@ class Source(BaseModel):
     url: str
 
 
+class OfferCard(BaseModel):
+    """Une offre réelle affichée au client — jamais rédigée par le LLM.
+
+    Remplie directement depuis `ScrapedOffer` (cf. `SpecializedAgent.process`) :
+    le modèle de langage ne peut ni inventer ni déformer un titre, une date de
+    clôture ou une entreprise, puisqu'il ne produit pas ce champ lui-même.
+    """
+
+    offer_ref: str
+    title: str
+    url: str | None = None
+    company: str | None = None
+    location: str | None = None
+    description: str | None = None
+    expires_at: str | None = None
+
+
 class AgentResponse(BaseModel):
     """Format unifié de toute réponse IA dans Malayka."""
 
@@ -314,6 +331,7 @@ class AgentResponse(BaseModel):
     steps: list[Step] = []
     suggestions: list[Suggestion] = []
     sources: list[Source] = []
+    offers: list[OfferCard] = []
     deliverables: list[str] = []
     agent_id: str
 
@@ -369,7 +387,22 @@ class SpecializedAgent:
         messages = self._build_messages(ctx)
         raw = await complete_with_continuation(self.llm, messages)
         response = self._parse(raw)
-        return self._inject_sources(response, ctx)
+        response = self._inject_sources(response, ctx)
+        return self._inject_offers(response, ctx)
+
+    def _inject_offers(self, response: AgentResponse, ctx: AgentContext) -> AgentResponse:
+        """Attache les offres réelles à la réponse — jamais via le LLM.
+
+        Les offres viennent de `ctx.goal_context["relevant_offers"]`, déjà
+        récupérées en base par `ScrapedOfferService` avant l'appel au modèle.
+        Le contenu de chaque carte (titre, date de clôture...) est donc
+        garanti fidèle à la base — aucun risque d'hallucination sur ces
+        champs, contrairement à un texte que le LLM aurait dû reformuler.
+        """
+        offers = ctx.goal_context.get("relevant_offers") if ctx.goal_context else None
+        if offers:
+            response.offers = [OfferCard(**o) for o in offers]
+        return response
 
     def _build_messages(self, ctx: AgentContext) -> list[dict]:
         """Construit la liste de messages pour le LLM.
@@ -408,8 +441,8 @@ class SpecializedAgent:
             })
 
         # goal_context : exclure les clés traitées séparément pour éviter les doublons.
-        # - relevant_offers : affichées via POUR TOI, pas dans les réponses agents
-        # - search_results  : traitées dans le bloc dédié ci-dessous
+        # - relevant_offers : formatées dans un bloc dédié ci-dessous (offres réelles)
+        # - search_results  : désactivé, cf. note plus bas
         _CTX_EXCLUDED = {"relevant_offers", "search_results"}
         goal_ctx_clean = {
             k: v for k, v in ctx.goal_context.items()
@@ -420,6 +453,33 @@ class SpecializedAgent:
             messages.append({
                 "role": "system",
                 "content": f"Contexte de l'objectif : {json.dumps(goal_ctx_clean, ensure_ascii=False)}",
+            })
+
+        # Offres réelles pertinentes — titre/entreprise/lieu/échéance seulement
+        # (pas la description complète : le LLM n'en a pas besoin pour en
+        # parler, et ça économise des tokens à chaque tour). La carte affichée
+        # au client, elle, porte la description complète — remplie séparément
+        # dans process(), jamais rédigée par le modèle.
+        relevant_offers = ctx.goal_context.get("relevant_offers") if ctx.goal_context else None
+        if relevant_offers:
+            lines = []
+            for o in relevant_offers:
+                parts = [f"« {o.get('title')} »"]
+                if o.get("company"):
+                    parts.append(f"chez {o['company']}")
+                if o.get("location"):
+                    parts.append(f"à {o['location']}")
+                if o.get("expires_at"):
+                    parts.append(f"(clôture : {o['expires_at'][:10]})")
+                lines.append(f"- {' '.join(parts)} [réf. {o.get('offer_ref')}]")
+            messages.append({
+                "role": "system",
+                "content": (
+                    "Offres réelles disponibles, déjà affichées au client sous forme de "
+                    "cartes — tu peux t'y référer par leur titre dans ta réponse, mais "
+                    "n'en réinvente jamais le contenu (dates, entreprise, lieu) :\n"
+                    + "\n".join(lines)
+                ),
             })
 
         # Note : l'injection de search_results (Perplexity) est désactivée.

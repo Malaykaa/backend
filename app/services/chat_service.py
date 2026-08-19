@@ -83,6 +83,7 @@ class ChatService:
         user_payload: dict | None = None,
         attachment_ids: list[str] | None = None,
         display_content: str | None = None,
+        offer_ref: str | None = None,
     ) -> tuple[ChatThread, AgentContext]:
         """Étapes communes à handle_message/stream_message :
         vérif ownership, mémoire, save user msg, construction de l'AgentContext.
@@ -90,6 +91,9 @@ class ChatService:
         display_content : si fourni, c'est ce texte court qui est stocké en DB
             (bulle utilisateur visible). `content` reste le contexte complet
             envoyé au LLM. Utilisé par les étapes du plan d'action.
+        offer_ref : quand le client a cliqué une action liée à UNE offre
+            précise (carte affichée dans le chat) — ancre le tour sur cette
+            seule offre plutôt que la recherche générique par intention/pays.
         """
         thread = self.repo.get_thread_with_messages(thread_id)
         if not thread or thread.user_id != user_id:
@@ -164,6 +168,7 @@ class ChatService:
             goal_context = thread.goal.context_data
         goal_context = self._enrich_with_offers(
             goal_context, goal_type, profile or {}, content, self.repo.db,
+            offer_ref=offer_ref,
         )
 
         ctx = AgentContext(
@@ -216,12 +221,13 @@ class ChatService:
         user_payload: dict | None = None,
         attachment_ids: list[str] | None = None,
         display_content: str | None = None,
+        offer_ref: str | None = None,
     ) -> tuple[ChatMessage, AgentResponse]:
         """Flux non-streaming : save user msg → orchestrate → save assistant msg → return."""
         bind_chat_context(thread_id=str(thread_id), user_id=str(user_id))
         thread, ctx = self._prepare_context(
             thread_id, user_id, content, profile, user_payload, attachment_ids,
-            display_content=display_content,
+            display_content=display_content, offer_ref=offer_ref,
         )
 
         llm = get_llm_provider()
@@ -343,8 +349,14 @@ class ChatService:
         profile: dict,
         content: str,
         db: "Session",
+        offer_ref: str | None = None,
     ) -> dict:
         """Enrichit goal_context avec des offres scrapées pertinentes.
+
+        Si `offer_ref` est fourni, ancre STRICTEMENT sur cette offre précise —
+        même s'il y en avait plusieurs dans le fil, seule celle-là est
+        transmise, pour que la réponse de l'agent ne porte que sur elle.
+        Sinon, recherche générique par intention/pays comme avant.
 
         Retourne goal_context inchangé si pas d'offres ou intent non pertinent.
         """
@@ -357,11 +369,15 @@ class ChatService:
             # (InFailedSqlTransaction PostgreSQL).
             with db.begin_nested():
                 svc = ScrapedOfferService(db)
-                offers = svc.search_for_agent(
-                    intent=goal_type,
-                    profile=profile,
-                    message=content,
-                )
+                if offer_ref:
+                    one = svc.get_by_ref(offer_ref)
+                    offers = [one] if one else []
+                else:
+                    offers = svc.search_for_agent(
+                        intent=goal_type,
+                        profile=profile,
+                        message=content,
+                    )
             if offers:
                 return {**goal_context, "relevant_offers": offers}
         except Exception:
@@ -422,11 +438,13 @@ class AsyncChatService:
         user_payload: dict | None = None,
         attachment_ids: list[str] | None = None,
         display_content: str | None = None,
+        offer_ref: str | None = None,
     ) -> tuple[ChatThread, AgentContext]:
         """Charge le thread, injecte la mémoire, persiste le message user.
 
         display_content : si fourni, stocké en DB à la place de content
             (bulle utilisateur). content reste le contexte complet pour le LLM.
+        offer_ref : ancre le tour sur UNE offre précise, cf. `ChatService._prepare_context`.
         """
         thread = await self.repo.get_thread_with_messages(thread_id)
         if not thread or thread.user_id != user_id:
@@ -479,7 +497,7 @@ class AsyncChatService:
         # Enrichissement offres scrapées — ScrapedOfferService est sync/pgvector
         # → thread isolé avec session sync propre pour ne pas bloquer asyncio
         goal_context = await _enrich_with_offers_async(
-            goal_context, goal_type, profile or {}, content,
+            goal_context, goal_type, profile or {}, content, offer_ref=offer_ref,
         )
 
         ctx = AgentContext(
@@ -539,11 +557,12 @@ class AsyncChatService:
         user_payload: dict | None = None,
         attachment_ids: list[str] | None = None,
         display_content: str | None = None,
+        offer_ref: str | None = None,
     ) -> tuple[ChatMessage, AgentResponse]:
         bind_chat_context(thread_id=str(thread_id), user_id=str(user_id))
         thread, ctx = await self._prepare_context(
             thread_id, user_id, content, profile, user_payload, attachment_ids,
-            display_content=display_content,
+            display_content=display_content, offer_ref=offer_ref,
         )
 
         llm = get_llm_provider()
@@ -570,6 +589,7 @@ class AsyncChatService:
         attachment_ids: list[str] | None = None,
         display_content: str | None = None,
         user_payload: dict | None = None,
+        offer_ref: str | None = None,
     ) -> AsyncIterator[ProgressEvent]:
         bind_chat_context(thread_id=str(thread_id), user_id=str(user_id))
         thread, ctx = await self._prepare_context(
@@ -577,6 +597,7 @@ class AsyncChatService:
             user_payload=user_payload,
             attachment_ids=attachment_ids,
             display_content=display_content,
+            offer_ref=offer_ref,
         )
 
         llm = get_llm_provider()
@@ -654,11 +675,13 @@ async def _enrich_with_offers_async(
     goal_type: str | None,
     profile: dict,
     content: str,
+    offer_ref: str | None = None,
 ) -> dict:
     """Enrichit goal_context avec des offres scrapées (ScrapedOfferService sync/pgvector).
 
     Lance la recherche dans un thread propre avec une session sync isolée
-    pour ne pas bloquer la boucle asyncio.
+    pour ne pas bloquer la boucle asyncio. `offer_ref` : cf.
+    `ChatService._enrich_with_offers` — ancre sur une offre précise.
     """
     if not goal_type or goal_type in ("document", "free"):
         return goal_context
@@ -667,6 +690,9 @@ async def _enrich_with_offers_async(
         from app.core.database import SessionLocal
         with SessionLocal() as sync_db:
             svc = ScrapedOfferService(sync_db)
+            if offer_ref:
+                one = svc.get_by_ref(offer_ref)
+                return [one] if one else []
             return svc.search_for_agent(intent=goal_type, profile=profile, message=content)
 
     try:
