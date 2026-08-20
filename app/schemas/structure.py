@@ -276,6 +276,7 @@ class ImpactReportResponse(BaseModel):
     evolution_plans_count: int
     completion_pct: int
     by_classroom: list[ImpactReportClassroomItem]
+    by_subject: list[ImpactReportSubjectItem]
 
 
 # ── Exercices / évaluations (QCM) ──────────────────────────────────────────
@@ -453,4 +454,20 @@ class ClassroomDifficultyReportResponse(BaseModel):
 class StudentDifficultyDetailResponse(BaseModel):
     insufficient_data: bool
     student: ClassroomDifficultyStudentItem | None
-    by_subject: list[ImpactReportSubjectItem]
+
+
+# ── Index élève : cours + exercices reçus, tous confondus ─────────────────
+
+
+class DeliveryItem(BaseModel):
+    kind: str  # "course" | "evolution_plan" | "exercise" | "evaluation"
+    id: str
+    title: str
+    classroom_name: str
+    created_at: datetime
+    completion_pct: int
+    score_pct: int | None
+
+
+class MyDeliveriesResponse(BaseModel):
+    items: list[DeliveryItem]

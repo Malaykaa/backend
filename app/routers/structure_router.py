@@ -52,6 +52,7 @@ from app.schemas.structure import (
     ClassroomDifficultyStudentItem,
     DashboardCourseItem,
     DashboardStudentItem,
+    DeliveryItem,
     ExerciseAnswerResult,
     ExerciseAttemptSummary,
     ExerciseCreate,
@@ -78,6 +79,7 @@ from app.schemas.structure import (
     InvitationPreview,
     InvitationResponse,
     MyCourseProgressResponse,
+    MyDeliveriesResponse,
     RecipientProgressResponse,
     RosterEntryResponse,
     RosterImportRequest,
@@ -93,7 +95,7 @@ from app.schemas.structure import (
 from app.llm import get_llm_provider
 from app.services import (
     classroom_course_service, classroom_exercise_service, impact_report_service,
-    structure_access, structure_service,
+    structure_access, structure_service, student_dashboard_service,
 )
 from app.services.whatsapp_service import whatsapp_service
 
@@ -683,6 +685,17 @@ def send_course(
     )
     db.commit()
     return CourseSendResult(new_recipients_count=len(new_recipients))
+
+
+@router.get("/my-deliveries", response_model=MyDeliveriesResponse)
+def get_my_deliveries(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    """Index de tout ce qu'un élève a reçu (cours, plans, exercices, évaluations),
+    tous confondus — corrige l'absence de tout point d'entrée listant ces envois."""
+    items = student_dashboard_service.list_my_deliveries(db, current_user.id)
+    return MyDeliveriesResponse(items=[DeliveryItem(**i) for i in items])
 
 
 @router.get("/classroom-courses/{course_id}/my-progress", response_model=MyCourseProgressResponse)
