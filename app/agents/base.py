@@ -147,6 +147,20 @@ Exemple :
 offers: scraped:1a2b3c | scraped:4d5e6f
 @@END@@
 
+### Métiers réels (clé `metiers`, si des fiches métiers candidates te sont fournies)
+Même principe que les offres : ce sont des CANDIDATES (recherche par pays et mots-clés),
+PAS un jugement de pertinence. C'est TOI qui juges lesquelles correspondent vraiment.
+- Si une ou plusieurs correspondent vraiment : liste leurs références dans
+  `metiers: réf1 | réf2`.
+- Si AUCUNE ne correspond : omets la clé, ou laisse-la vide.
+- Ne recopie JAMAIS le titre, les compétences ou les formations toi-même dans le
+  Markdown — la carte affichée les récupère en base à partir de la référence.
+
+Exemple :
+@@META@@
+metiers: career:1a2b3c | career:4d5e6f
+@@END@@
+
 ### Règles STRICTES
 - **clarifications et steps sont MUTUELLEMENT EXCLUSIFS** : si tu poses des questions → clarifications, PAS de steps. Si tu donnes un plan → steps, PAS de clarifications.
 - **Question explicative** (comment, pourquoi, explique) : réponds en Markdown. PAS de steps ni clarifications.
@@ -307,6 +321,9 @@ def _parse_meta_block(raw: str) -> tuple[str, dict]:
         elif key == "offers":
             meta["offer_refs"] = [r.strip() for r in value.split("|") if r.strip()]
 
+        elif key == "metiers":
+            meta["career_refs"] = [r.strip() for r in value.split("|") if r.strip()]
+
     return content, meta
 
 
@@ -347,6 +364,22 @@ class OfferCard(BaseModel):
     expires_at: str | None = None
 
 
+class CareerCard(BaseModel):
+    """Une fiche métier réelle affichée au client — jamais rédigée par le LLM.
+
+    Remplie directement depuis `CareerReference` (cf. `SpecializedAgent.process`) :
+    mêmes garde-fous anti-hallucination qu'OfferCard, appliqués au référentiel
+    métiers curaté (cf. career_reference_service.py).
+    """
+
+    career_ref: str
+    title: str
+    category: str | None = None
+    description: str | None = None
+    key_skills: list[str] = []
+    example_formations: list[dict] = []
+
+
 class AgentResponse(BaseModel):
     """Format unifié de toute réponse IA dans Malayka."""
 
@@ -356,6 +389,7 @@ class AgentResponse(BaseModel):
     suggestions: list[Suggestion] = []
     sources: list[Source] = []
     offers: list[OfferCard] = []
+    careers: list[CareerCard] = []
     deliverables: list[str] = []
     agent_id: str
 
@@ -413,7 +447,8 @@ class SpecializedAgent:
         response = self._parse(raw)
         response = self._inject_sources(response, ctx)
         _, meta = _parse_meta_block(raw)
-        return self._inject_offers(response, ctx, meta.get("offer_refs"))
+        response = self._inject_offers(response, ctx, meta.get("offer_refs"))
+        return self._inject_careers(response, ctx, meta.get("career_refs"))
 
     def _inject_offers(
         self, response: AgentResponse, ctx: AgentContext, selected_refs: list[str] | None,
@@ -443,6 +478,22 @@ class SpecializedAgent:
             offers = []
         if offers:
             response.offers = [OfferCard(**o) for o in offers]
+        return response
+
+    def _inject_careers(
+        self, response: AgentResponse, ctx: AgentContext, selected_refs: list[str] | None,
+    ) -> AgentResponse:
+        """Attache les fiches métiers réelles à la réponse — mirroir exact de
+        _inject_offers, mêmes garde-fous anti-hallucination (cf. sa docstring)."""
+        careers = ctx.goal_context.get("relevant_careers") if ctx.goal_context else None
+        if not careers:
+            return response
+        if selected_refs:
+            careers = [c for c in careers if c.get("career_ref") in selected_refs]
+        else:
+            careers = []
+        if careers:
+            response.careers = [CareerCard(**c) for c in careers]
         return response
 
     def _build_messages(self, ctx: AgentContext) -> list[dict]:
@@ -482,9 +533,10 @@ class SpecializedAgent:
             })
 
         # goal_context : exclure les clés traitées séparément pour éviter les doublons.
-        # - relevant_offers : formatées dans un bloc dédié ci-dessous (offres réelles)
-        # - search_results  : désactivé, cf. note plus bas
-        _CTX_EXCLUDED = {"relevant_offers", "search_results"}
+        # - relevant_offers  : formatées dans un bloc dédié ci-dessous (offres réelles)
+        # - relevant_careers : formatées dans un bloc dédié ci-dessous (métiers réels)
+        # - search_results   : désactivé, cf. note plus bas
+        _CTX_EXCLUDED = {"relevant_offers", "relevant_careers", "search_results"}
         goal_ctx_clean = {
             k: v for k, v in ctx.goal_context.items()
             if k not in _CTX_EXCLUDED
@@ -519,6 +571,27 @@ class SpecializedAgent:
                     "Offres candidates (catégorie + pays uniquement, pertinence non "
                     "vérifiée) — choisis toi-même lesquelles montrer, cf. la clé "
                     "`offers` du @@META@@ :\n"
+                    + "\n".join(lines)
+                ),
+            })
+
+        # Fiches métiers candidates — même logique que les offres : titre/catégorie
+        # seulement, la description complète et les compétences/formations restent
+        # dans la carte affichée, remplie séparément dans process().
+        relevant_careers = ctx.goal_context.get("relevant_careers") if ctx.goal_context else None
+        if relevant_careers:
+            lines = []
+            for c in relevant_careers:
+                parts = [f"« {c.get('title')} »"]
+                if c.get("category"):
+                    parts.append(f"({c['category']})")
+                lines.append(f"- {' '.join(parts)} [réf. {c.get('career_ref')}]")
+            messages.append({
+                "role": "system",
+                "content": (
+                    "Métiers candidats (pays + mots-clés uniquement, pertinence non "
+                    "vérifiée) — choisis toi-même lesquels montrer, cf. la clé "
+                    "`metiers` du @@META@@ :\n"
                     + "\n".join(lines)
                 ),
             })

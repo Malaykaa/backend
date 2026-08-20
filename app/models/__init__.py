@@ -7,6 +7,7 @@ from app.models.chat import ChatThread, ChatMessage, ThreadStatus, MessageRole  
 from app.models.opportunity import Opportunity, UserOpportunity, OpportunityType, UserOpportunityStatus  # noqa: F401
 from app.models.attachment import Attachment  # noqa: F401
 from app.models.scraped_offer import ScrapedOffer, ScrapedOfferType  # noqa: F401
+from app.models.career_reference import CareerReference  # noqa: F401
 from app.models.user_intent import UserIntent  # noqa: F401
 from app.models.user_offer_feedback import UserOfferFeedback, FeedbackAction  # noqa: F401
 from app.models.scraping_source import ScrapingSource  # noqa: F401
