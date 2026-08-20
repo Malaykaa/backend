@@ -91,6 +91,7 @@ def inject_markers(content: str, payload: dict | None) -> str:
     - clarifications → liste numérotée en texte (toujours visibles)
     - steps → @@STEPS@@ (boutons cliquables côté frontend)
     - suggestions → @@PROPOSITIONS@@ (boutons cliquables côté frontend)
+    - offers → @@OFFERS@@ (cartes d'offres réelles, jamais rédigées par le LLM)
 
     Dé-duplique avant injection pour éviter que le LLM répète en Markdown
     ce que les champs structurés portent déjà.
@@ -105,6 +106,7 @@ def inject_markers(content: str, payload: dict | None) -> str:
     clarifications = payload.get("clarifications", [])
     suggestions = payload.get("suggestions", [])
     steps = payload.get("steps", [])
+    offers = payload.get("offers", [])
 
     # Le prompt LLM (app/agents/base.py) interdit désormais aux agents
     # de répéter les questions en Markdown ; on ne dé-duplique plus que
@@ -138,6 +140,10 @@ def inject_markers(content: str, payload: dict | None) -> str:
         labels = [s["label"] if isinstance(s, dict) else str(s) for s in suggestions]
         encoded = urllib.parse.quote(json.dumps(labels, ensure_ascii=False))
         content += f"\n\n@@PROPOSITIONS@@ {encoded}"
+
+    if offers:
+        encoded = urllib.parse.quote(json.dumps(offers, ensure_ascii=False))
+        content += f"\n\n@@OFFERS@@ {encoded}"
 
     return content
 

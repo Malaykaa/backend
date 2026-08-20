@@ -72,6 +72,9 @@ class FrontendMessageCreate(BaseModel):
     history: list[dict] | None = None
     metadata: dict | None = None
     attachment_ids: list[str] | None = None  # UUIDs des pièces jointes uploadées
+    # Référence d'une offre précise (carte affichée dans le chat) — ancre la
+    # réponse sur cette seule offre. Cf. ScrapedOfferService.get_by_ref.
+    offer_ref: str | None = Field(default=None, max_length=100)
 
 
 # ── Schémas de réponse ──────────────────────────────────────
@@ -443,6 +446,7 @@ async def send_message(
         content=body.content,
         profile=profile,
         attachment_ids=body.attachment_ids,
+        offer_ref=body.offer_ref,
     )
 
     # Auto-persist plan si l'agent retourne des étapes et que le goal n'a pas encore de plan
@@ -586,6 +590,7 @@ async def stream_message(
             attachment_ids=body.attachment_ids,
             display_content=body.display_content,
             user_payload=body.metadata,
+            offer_ref=body.offer_ref,
         ):
             if event.type == EventType.done and event.agent_response:
                 _resp_snapshot = event.agent_response

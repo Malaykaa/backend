@@ -11,16 +11,49 @@ from __future__ import annotations
 
 import logging
 import re
+import uuid
 from typing import TYPE_CHECKING
 
 from sqlalchemy.orm import Session
 
+from app.models.scraped_offer import ScrapedOffer
 from app.repositories.scraped_offer_repo import ScrapedOfferRepository
 from app.services.embedding_service import get_embedding_service
 
 if TYPE_CHECKING:
-    from app.models.scraped_offer import ScrapedOffer
     from app.models.user_intent import UserIntent
+
+# Préfixe de la référence exposée au frontend/LLM pour une offre scrapée —
+# distingue explicitement la source si un autre type d'opportunité (table
+# `opportunities`, distincte) devait un jour partager le même canal.
+_OFFER_REF_PREFIX = "scraped:"
+
+
+def _serialize_for_agent(o: ScrapedOffer) -> dict:
+    """Forme envoyée à l'agent et à la carte d'offre du frontend.
+
+    `description` est tronquée : elle sert à la carte affichée et au LLM,
+    pas besoin du texte intégral pour l'un ou l'autre.
+    """
+    return {
+        "offer_ref": f"{_OFFER_REF_PREFIX}{o.id}",
+        "title": o.title,
+        "url": o.url,
+        "company": o.company,
+        "location": o.location,
+        "type": o.offer_type.value if o.offer_type else None,
+        "description": (o.description or "")[:600] or None,
+        "expires_at": o.expires_at.isoformat() if o.expires_at else None,
+    }
+
+
+def _parse_offer_ref(offer_ref: str) -> uuid.UUID | None:
+    if not offer_ref or not offer_ref.startswith(_OFFER_REF_PREFIX):
+        return None
+    try:
+        return uuid.UUID(offer_ref[len(_OFFER_REF_PREFIX):])
+    except ValueError:
+        return None
 
 logger = logging.getLogger(__name__)
 
@@ -136,17 +169,21 @@ class ScrapedOfferService:
             limit=limit,
         )
 
-        return [
-            {
-                "title": o.title,
-                "url": o.url,
-                "company": o.company,
-                "location": o.location,
-                "type": o.offer_type.value if o.offer_type else None,
-            }
-            for o in offers
-            if o.title
-        ]
+        return [_serialize_for_agent(o) for o in offers if o.title]
+
+    def get_by_ref(self, offer_ref: str) -> dict | None:
+        """Une offre précise par sa référence — pour ancrer une conversation sur
+
+        UNE offre choisie par l'utilisateur (ex. carte affichée dans le chat),
+        plutôt que la recherche générique par intention/pays de `search_for_agent`.
+        """
+        offer_id = _parse_offer_ref(offer_ref)
+        if offer_id is None:
+            return None
+        offer = self.repo.db.get(ScrapedOffer, offer_id)
+        if not offer or not offer.title:
+            return None
+        return _serialize_for_agent(offer)
 
     def search_for_profile(
         self,

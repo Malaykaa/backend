@@ -126,6 +126,27 @@ steps: Consolider les bases :: Revoir algèbre et analyse de terminale | S'entra
 suggestions: Créer un planning de révision | Trouver des annales corrigées
 @@END@@
 
+### Offres réelles (clé `offers`, si des offres candidates te sont fournies)
+Si le système te fournit une liste d'offres réelles disponibles, ce sont des
+CANDIDATES — une recherche par catégorie et pays, PAS un jugement de
+pertinence. Certaines peuvent n'avoir aucun rapport avec ce que l'utilisateur
+demande précisément dans ce message. C'est TOI qui juges lesquelles, s'il y
+en a, méritent d'être montrées, en fonction de la conversation et de son
+objectif réel.
+- Si une ou plusieurs candidates correspondent vraiment : liste leurs
+  références (fournies entre crochets, ex. `[réf. scraped:...]`) dans
+  `offers: réf1 | réf2`.
+- Si AUCUNE ne correspond vraiment : omets la clé `offers`, ou laisse-la
+  vide. Mieux vaut ne rien montrer qu'une offre hors sujet.
+- Ne recopie JAMAIS le titre, l'entreprise ou la date toi-même dans le
+  Markdown — la carte affichée à l'utilisateur les récupère directement en
+  base à partir de la référence, tu n'as qu'à choisir laquelle montrer.
+
+Exemple :
+@@META@@
+offers: scraped:1a2b3c | scraped:4d5e6f
+@@END@@
+
 ### Règles STRICTES
 - **clarifications et steps sont MUTUELLEMENT EXCLUSIFS** : si tu poses des questions → clarifications, PAS de steps. Si tu donnes un plan → steps, PAS de clarifications.
 - **Question explicative** (comment, pourquoi, explique) : réponds en Markdown. PAS de steps ni clarifications.
@@ -283,6 +304,9 @@ def _parse_meta_block(raw: str) -> tuple[str, dict]:
                         sources.append({"title": title, "url": url})
             meta["sources"] = sources
 
+        elif key == "offers":
+            meta["offer_refs"] = [r.strip() for r in value.split("|") if r.strip()]
+
     return content, meta
 
 
@@ -306,6 +330,23 @@ class Source(BaseModel):
     url: str
 
 
+class OfferCard(BaseModel):
+    """Une offre réelle affichée au client — jamais rédigée par le LLM.
+
+    Remplie directement depuis `ScrapedOffer` (cf. `SpecializedAgent.process`) :
+    le modèle de langage ne peut ni inventer ni déformer un titre, une date de
+    clôture ou une entreprise, puisqu'il ne produit pas ce champ lui-même.
+    """
+
+    offer_ref: str
+    title: str
+    url: str | None = None
+    company: str | None = None
+    location: str | None = None
+    description: str | None = None
+    expires_at: str | None = None
+
+
 class AgentResponse(BaseModel):
     """Format unifié de toute réponse IA dans Malayka."""
 
@@ -314,6 +355,7 @@ class AgentResponse(BaseModel):
     steps: list[Step] = []
     suggestions: list[Suggestion] = []
     sources: list[Source] = []
+    offers: list[OfferCard] = []
     deliverables: list[str] = []
     agent_id: str
 
@@ -369,7 +411,39 @@ class SpecializedAgent:
         messages = self._build_messages(ctx)
         raw = await complete_with_continuation(self.llm, messages)
         response = self._parse(raw)
-        return self._inject_sources(response, ctx)
+        response = self._inject_sources(response, ctx)
+        _, meta = _parse_meta_block(raw)
+        return self._inject_offers(response, ctx, meta.get("offer_refs"))
+
+    def _inject_offers(
+        self, response: AgentResponse, ctx: AgentContext, selected_refs: list[str] | None,
+    ) -> AgentResponse:
+        """Attache les offres réelles à la réponse — jamais leur CONTENU via le LLM.
+
+        Deux décisions séparées, à ne pas confondre :
+        - QUOI dire sur une offre retenue (titre, date, entreprise...) : vient
+          toujours de `ctx.goal_context["relevant_offers"]`, déjà récupéré en
+          base — aucun risque d'hallucination sur ces champs.
+        - LAQUELLE montrer : décidée par l'agent via `selected_refs`, extrait
+          de sa réponse (clé `offers` du @@META@@). Les candidates viennent
+          d'une recherche par catégorie et pays, pas d'un jugement de
+          pertinence — sans ce filtre, une offre hors sujet remonterait aussi
+          sûrement qu'une pertinente.
+
+        `selected_refs is None` (clé absente) est distinct d'une liste vide :
+        dans les deux cas, rien n'est montré — mieux vaut un agent qui oublie
+        la clé qu'une offre hors sujet affichée par défaut.
+        """
+        offers = ctx.goal_context.get("relevant_offers") if ctx.goal_context else None
+        if not offers:
+            return response
+        if selected_refs:
+            offers = [o for o in offers if o.get("offer_ref") in selected_refs]
+        else:
+            offers = []
+        if offers:
+            response.offers = [OfferCard(**o) for o in offers]
+        return response
 
     def _build_messages(self, ctx: AgentContext) -> list[dict]:
         """Construit la liste de messages pour le LLM.
@@ -408,8 +482,8 @@ class SpecializedAgent:
             })
 
         # goal_context : exclure les clés traitées séparément pour éviter les doublons.
-        # - relevant_offers : affichées via POUR TOI, pas dans les réponses agents
-        # - search_results  : traitées dans le bloc dédié ci-dessous
+        # - relevant_offers : formatées dans un bloc dédié ci-dessous (offres réelles)
+        # - search_results  : désactivé, cf. note plus bas
         _CTX_EXCLUDED = {"relevant_offers", "search_results"}
         goal_ctx_clean = {
             k: v for k, v in ctx.goal_context.items()
@@ -420,6 +494,33 @@ class SpecializedAgent:
             messages.append({
                 "role": "system",
                 "content": f"Contexte de l'objectif : {json.dumps(goal_ctx_clean, ensure_ascii=False)}",
+            })
+
+        # Offres réelles pertinentes — titre/entreprise/lieu/échéance seulement
+        # (pas la description complète : le LLM n'en a pas besoin pour en
+        # parler, et ça économise des tokens à chaque tour). La carte affichée
+        # au client, elle, porte la description complète — remplie séparément
+        # dans process(), jamais rédigée par le modèle.
+        relevant_offers = ctx.goal_context.get("relevant_offers") if ctx.goal_context else None
+        if relevant_offers:
+            lines = []
+            for o in relevant_offers:
+                parts = [f"« {o.get('title')} »"]
+                if o.get("company"):
+                    parts.append(f"chez {o['company']}")
+                if o.get("location"):
+                    parts.append(f"à {o['location']}")
+                if o.get("expires_at"):
+                    parts.append(f"(clôture : {o['expires_at'][:10]})")
+                lines.append(f"- {' '.join(parts)} [réf. {o.get('offer_ref')}]")
+            messages.append({
+                "role": "system",
+                "content": (
+                    "Offres candidates (catégorie + pays uniquement, pertinence non "
+                    "vérifiée) — choisis toi-même lesquelles montrer, cf. la clé "
+                    "`offers` du @@META@@ :\n"
+                    + "\n".join(lines)
+                ),
             })
 
         # Note : l'injection de search_results (Perplexity) est désactivée.
