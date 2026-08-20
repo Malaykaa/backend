@@ -11,7 +11,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -60,6 +60,18 @@ class ClassroomStepStatus(str, enum.Enum):
 class ClassroomCourseKind(str, enum.Enum):
     course         = "course"          # soumis par l'enseignant, destiné à plusieurs étudiants
     evolution_plan = "evolution_plan"  # généré par lot, personnalisé pour UN étudiant (Phase 4)
+
+
+class ClassroomExerciseKind(str, enum.Enum):
+    exercise   = "exercise"    # entraînement, tentatives illimitées
+    evaluation = "evaluation"  # noté, une seule tentative
+
+
+class ExerciseSubmissionStatus(str, enum.Enum):
+    in_progress = "in_progress"
+    # Correction QCM déterministe faite à la soumission — pas d'état "en attente
+    # de correction" côté enseignant, contrairement à un devoir à correction humaine.
+    submitted = "submitted"
 
 
 class Structure(Base):
@@ -394,4 +406,146 @@ class ClassroomCourseStepProgress(Base):
 
     __table_args__ = (
         UniqueConstraint("recipient_id", "step_id", name="uq_classroom_step_progress"),
+    )
+
+
+class ClassroomExercise(Base):
+    """Exercice ou évaluation QCM créé par un enseignant pour une Classroom.
+
+    Reprend la forme de ClassroomCourse (mêmes conventions classroom→contenu→
+    destinataires matérialisés→progression), avec kind pour distinguer un
+    entraînement (tentatives illimitées) d'une évaluation notée (une seule
+    tentative, cf. classroom_exercise_service.start_submission)."""
+
+    __tablename__ = "classroom_exercises"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    classroom_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("classrooms.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    subject: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    kind: Mapped[ClassroomExerciseKind] = mapped_column(
+        Enum(ClassroomExerciseKind, name="classroom_exercise_kind_enum"),
+        nullable=False, default=ClassroomExerciseKind.exercise,
+    )
+    topic_hint: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_course_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("classroom_courses.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+    questions: Mapped[list["ClassroomExerciseQuestion"]] = relationship(
+        back_populates="exercise", cascade="all, delete-orphan", order_by="ClassroomExerciseQuestion.order"
+    )
+
+
+class ClassroomExerciseQuestion(Base):
+    __tablename__ = "classroom_exercise_questions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    exercise_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("classroom_exercises.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    choices: Mapped[list] = mapped_column(JSON, nullable=False)
+    correct_choice_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    points: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    order: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Notion couverte par la question (ex. "dérivées composées") — c'est ce tag
+    # que classroom_exercise_service.get_classroom_difficulty_report agrège pour
+    # regrouper les échecs par notion plutôt que par question isolée.
+    topic_tag: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    exercise: Mapped["ClassroomExercise"] = relationship(back_populates="questions")
+
+
+class ClassroomExerciseRecipient(Base):
+    """Un destinataire effectif d'un exercice (matérialisé à l'envoi) — miroir
+    exact de ClassroomCourseRecipient."""
+
+    __tablename__ = "classroom_exercise_recipients"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    exercise_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("classroom_exercises.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    chat_thread_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chat_threads.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+    __table_args__ = (
+        UniqueConstraint("exercise_id", "user_id", name="uq_classroom_exercise_recipient"),
+    )
+
+
+class ClassroomExerciseSubmission(Base):
+    """Une tentative d'un élève sur un exercice/évaluation.
+
+    La règle "une seule tentative pour une évaluation" est appliquée dans
+    classroom_exercise_service (dépend de exercise.kind, sur une autre table —
+    pas modélisable proprement en contrainte SQL ici)."""
+
+    __tablename__ = "classroom_exercise_submissions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    recipient_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("classroom_exercise_recipients.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[ExerciseSubmissionStatus] = mapped_column(
+        Enum(ExerciseSubmissionStatus, name="exercise_submission_status_enum"),
+        nullable=False, default=ExerciseSubmissionStatus.in_progress,
+    )
+    score_points: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_points: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    score_pct: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("recipient_id", "attempt_number", name="uq_classroom_exercise_submission_attempt"),
+    )
+
+
+class ClassroomExerciseAnswer(Base):
+    """Réponse d'un élève à une question, dans le cadre d'une soumission.
+
+    Pré-créée (selected_choice_index=NULL) au démarrage de la tentative — même
+    logique que ClassroomCourseStepProgress — pour que submit_exercise soit un
+    simple pass de mise à jour plutôt qu'un mélange insert/update."""
+
+    __tablename__ = "classroom_exercise_answers"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    submission_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("classroom_exercise_submissions.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    question_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("classroom_exercise_questions.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    selected_choice_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_correct: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    points_earned: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        UniqueConstraint("submission_id", "question_id", name="uq_classroom_exercise_answer"),
     )

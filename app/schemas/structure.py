@@ -276,4 +276,181 @@ class ImpactReportResponse(BaseModel):
     evolution_plans_count: int
     completion_pct: int
     by_classroom: list[ImpactReportClassroomItem]
+
+
+# ── Exercices / évaluations (QCM) ──────────────────────────────────────────
+
+
+class ExerciseCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=300)
+    topic_hint: str = Field(min_length=1, max_length=300)
+    subject: str | None = Field(default=None, max_length=100)
+    kind: str = "exercise"  # "exercise" | "evaluation"
+    question_count: int = Field(default=8, ge=1, le=20)
+    source_course_id: str | None = None
+
+
+class QuestionEditInput(BaseModel):
+    prompt: str = Field(min_length=1)
+    choices: list[str] = Field(min_length=2, max_length=6)
+    correct_choice_index: int
+    explanation: str | None = None
+    topic_tag: str | None = None
+    points: int = Field(default=1, ge=1)
+
+
+class ExerciseQuestionsUpdate(BaseModel):
+    questions: list[QuestionEditInput] = Field(min_length=1)
+
+
+class ExerciseQuestionAnswerKeyResponse(BaseModel):
+    """Vue enseignant — inclut la bonne réponse."""
+
+    id: str
+    prompt: str
+    choices: list[str]
+    correct_choice_index: int
+    explanation: str | None
+    points: int
+    order: int
+    topic_tag: str | None
+
+
+class ExerciseResponse(BaseModel):
+    id: str
+    classroom_id: str
+    title: str
+    subject: str | None
+    kind: str
+    topic_hint: str | None
+    instructions: str | None
+    source_course_id: str | None
+    created_at: datetime
+    questions: list[ExerciseQuestionAnswerKeyResponse]
+
+
+class ExerciseListItem(BaseModel):
+    id: str
+    classroom_id: str
+    title: str
+    subject: str | None
+    kind: str
+    created_at: datetime
+    questions_count: int
+    recipients_count: int
+
+
+class ExerciseSendRequest(BaseModel):
+    target: str  # "classroom" | "student"
+    student_user_id: str | None = None
+
+
+class ExerciseSendResult(BaseModel):
+    new_recipients_count: int
+
+
+class ExerciseTakeQuestion(BaseModel):
+    """Vue élève — JAMAIS correct_choice_index ni explanation avant soumission."""
+
+    id: str
+    prompt: str
+    choices: list[str]
+    order: int
+
+
+class ExerciseTakeResponse(BaseModel):
+    exercise_id: str
+    title: str
+    instructions: str | None
+    kind: str
+    questions: list[ExerciseTakeQuestion]
+
+
+class ExerciseSubmissionResponse(BaseModel):
+    submission_id: str
+    attempt_number: int
+    status: str
+
+
+class ExerciseAnswerInput(BaseModel):
+    question_id: str
+    selected_choice_index: int | None = None
+
+
+class ExerciseSubmitRequest(BaseModel):
+    answers: list[ExerciseAnswerInput]
+
+
+class ExerciseAnswerResult(BaseModel):
+    question_id: str
+    prompt: str
+    choices: list[str]
+    selected_choice_index: int | None
+    correct_choice_index: int
+    is_correct: bool
+    explanation: str | None
+
+
+class ExerciseResultResponse(BaseModel):
+    exercise_id: str
+    attempt_number: int
+    status: str
+    score_points: int | None
+    max_points: int | None
+    score_pct: int | None
+    submitted_at: datetime | None
+    answers: list[ExerciseAnswerResult]
+
+
+class ExerciseAttemptSummary(BaseModel):
+    attempt_number: int
+    score_pct: int | None
+    submitted_at: datetime | None
+
+
+class ExerciseRecipientResult(BaseModel):
+    user_id: str
+    user_email: str | None
+    user_name: str | None
+    attempted: bool
+    score_pct: int | None
+    submitted_at: datetime | None
+
+
+class ExerciseResultsMatrixResponse(BaseModel):
+    exercise_id: str
+    title: str
+    kind: str
+    recipients: list[ExerciseRecipientResult]
+
+
+class StudentTopicFlag(BaseModel):
+    topic_tag: str
+    wrong_rate: float
+    questions_seen: int
+
+
+class ClassroomDifficultyStudentItem(BaseModel):
+    user_id: str
+    user_name: str | None
+    avg_score_pct: int
+    flagged_topics: list[StudentTopicFlag]
+    trend: str | None  # "improving" | "flat" | "declining" | None
+
+
+class TopicDifficultyItem(BaseModel):
+    topic_tag: str
+    class_success_rate: int
+    students_flagged_count: int
+
+
+class ClassroomDifficultyReportResponse(BaseModel):
+    students: list[ClassroomDifficultyStudentItem]
+    topics: list[TopicDifficultyItem]
+    insufficient_data: bool
+
+
+class StudentDifficultyDetailResponse(BaseModel):
+    insufficient_data: bool
+    student: ClassroomDifficultyStudentItem | None
     by_subject: list[ImpactReportSubjectItem]
