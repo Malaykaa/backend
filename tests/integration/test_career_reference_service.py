@@ -48,6 +48,20 @@ class TestSearchForAgent:
         )
         assert any(r["title"] == "Métier générique" for r in results)
 
+    def test_les_interets_declares_alimentent_le_matching(self, db_session):
+        """Les intérêts déclarés (nouveau champ Profile) doivent participer à la
+        recherche de mots-clés, au même titre que domain/field_of_study."""
+        _make_career(db_session, title="Technicien agricole", category="Agriculture")
+        _make_career(db_session, title="Développeur web", category="Informatique")
+
+        results = CareerReferenceService(db_session).search_for_agent(
+            profile={"country": "CI", "interests": ["agriculture", "élevage"]},
+            message="je ne sais pas quoi faire",
+        )
+        titles = [r["title"] for r in results]
+        assert "Technicien agricole" in titles
+        assert "Développeur web" not in titles
+
     def test_filtre_par_mots_cles(self, db_session):
         _make_career(db_session, title="Développeur web", category="Informatique")
         _make_career(db_session, title="Infirmier", category="Santé")

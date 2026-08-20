@@ -81,6 +81,13 @@ class Profile(Base):
     preferred_content: Mapped[str | None] = mapped_column(String(200), nullable=True)
     cv_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Intérêts déclarés (tags libres) — demandés à la création d'objectif, cf.
+    # NewObjectiveSheet.tsx. Alimentent aussi career_reference_service.search_for_agent.
+    interests: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Description libre — "décris-toi le plus clairement possible" — jamais sollicitée
+    # sur le comportement ou la situation familiale directement (cf. NewObjectiveSheet.tsx).
+    self_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Préférences de matching automatique (cron). NULL → défaut applicatif
     # (6 h). Voir app/services/matching/match_runner.py.
     match_frequency_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)

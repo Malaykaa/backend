@@ -73,7 +73,9 @@ class CareerReferenceService:
         if country:
             stmt = stmt.where(or_(CareerReference.country == country, CareerReference.country.is_(None)))
 
-        keywords = _keywords(message, profile.get("domain"), profile.get("field_of_study"))
+        interests = profile.get("interests")
+        interests_text = " ".join(interests) if isinstance(interests, list) else None
+        keywords = _keywords(message, profile.get("domain"), profile.get("field_of_study"), interests_text)
         if keywords:
             conditions = [
                 or_(
