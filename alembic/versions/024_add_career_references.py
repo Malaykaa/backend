@@ -1,14 +1,19 @@
 """Add CareerReference (référentiel curaté métiers/compétences/formations).
 
-Revision ID: 022
-Revises: 021
+Renumérotée 022→024 (Revises 021→023) : feat/teacher-exercises a créé sa
+propre migration "022" en parallèle sur la même base — les deux ne peuvent
+pas coexister sur main. Cette branche doit être mergée APRÈS
+feat/teacher-exercises (dont la dernière migration est 023).
+
+Revision ID: 024
+Revises: 023
 Create Date: 2026-08-20 00:00:00.000000
 """
 
 from alembic import op
 
-revision = "022"
-down_revision = "021"
+revision = "024"
+down_revision = "023"
 branch_labels = None
 depends_on = None
 

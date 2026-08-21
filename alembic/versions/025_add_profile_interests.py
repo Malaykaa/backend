@@ -1,15 +1,18 @@
 """Add interests + self_description to profiles.
 
-Revision ID: 023
-Revises: 022
+Renumérotée 023→025 (Revises 022→024) — suite du renommage de
+024_add_career_references.py, cf. sa docstring.
+
+Revision ID: 025
+Revises: 024
 Create Date: 2026-08-21
 """
 
 from alembic import op
 import sqlalchemy as sa
 
-revision = "023"
-down_revision = "022"
+revision = "025"
+down_revision = "024"
 branch_labels = None
 depends_on = None
 
