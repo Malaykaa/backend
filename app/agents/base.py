@@ -509,11 +509,33 @@ class SpecializedAgent:
         ]
 
         if ctx.profile:
-            profile_info = ", ".join(f"{k}: {v}" for k, v in ctx.profile.items() if v)
+            # self_description est un paragraphe libre — le sortir du résumé
+            # compact "clé: valeur" (qui deviendrait illisible avec un long
+            # texte au milieu) et lui donner son propre message, comme les
+            # blocs offres/métiers ci-dessous.
+            compact_profile = {k: v for k, v in ctx.profile.items() if k != "self_description"}
+
+            def _fmt_value(v):
+                # Une liste (ex. interests: ["informatique", "design"]) doit
+                # rester lisible pour le LLM — jamais le repr Python brut.
+                return ", ".join(str(x) for x in v) if isinstance(v, list) else v
+
+            profile_info = ", ".join(
+                f"{k}: {_fmt_value(v)}" for k, v in compact_profile.items() if v
+            )
             if profile_info:
                 messages.append({
                     "role": "system",
                     "content": f"Profil de l'utilisateur : {profile_info}",
+                })
+
+            if ctx.profile.get("self_description"):
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "Description que l'utilisateur a donnée de lui-même : "
+                        f"{ctx.profile['self_description']}"
+                    ),
                 })
 
         # Hint A5 : champs critiques manquants → l'agent les priorise
