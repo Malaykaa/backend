@@ -23,4 +23,7 @@ from app.models.structure import (  # noqa: F401
     ClassroomRosterEntry, ClassroomMembership, MembershipStatus,
     ClassroomStepStatus, ClassroomCourse, ClassroomCourseStep,
     ClassroomCourseRecipient, ClassroomCourseStepProgress, ClassroomCourseKind,
+    ClassroomExercise, ClassroomExerciseQuestion, ClassroomExerciseRecipient,
+    ClassroomExerciseSubmission, ClassroomExerciseAnswer,
+    ClassroomExerciseKind, ExerciseSubmissionStatus,
 )

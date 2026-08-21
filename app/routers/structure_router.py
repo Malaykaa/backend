@@ -23,6 +23,9 @@ from app.models.structure import (
     Classroom,
     ClassroomCourse,
     ClassroomCourseRecipient,
+    ClassroomExerciseAnswer,
+    ClassroomExerciseKind,
+    ClassroomExerciseRecipient,
     ClassroomMembership,
     InvitationStatus,
     Structure,
@@ -45,8 +48,27 @@ from app.schemas.structure import (
     CourseSendRequest,
     CourseSendResult,
     CourseStepResponse,
+    ClassroomDifficultyReportResponse,
+    ClassroomDifficultyStudentItem,
     DashboardCourseItem,
     DashboardStudentItem,
+    DeliveryItem,
+    ExerciseAnswerResult,
+    ExerciseAttemptSummary,
+    ExerciseCreate,
+    ExerciseListItem,
+    ExerciseQuestionAnswerKeyResponse,
+    ExerciseQuestionsUpdate,
+    ExerciseRecipientResult,
+    ExerciseResponse,
+    ExerciseResultResponse,
+    ExerciseResultsMatrixResponse,
+    ExerciseSendRequest,
+    ExerciseSendResult,
+    ExerciseSubmissionResponse,
+    ExerciseSubmitRequest,
+    ExerciseTakeQuestion,
+    ExerciseTakeResponse,
     GenerateEvolutionPlansResult,
     ImpactReportClassroomItem,
     ImpactReportResponse,
@@ -57,6 +79,7 @@ from app.schemas.structure import (
     InvitationPreview,
     InvitationResponse,
     MyCourseProgressResponse,
+    MyDeliveriesResponse,
     RecipientProgressResponse,
     RosterEntryResponse,
     RosterImportRequest,
@@ -65,9 +88,15 @@ from app.schemas.structure import (
     StructureDashboardClassroomItem,
     StructureDashboardResponse,
     StructureResponse,
+    StudentDifficultyDetailResponse,
+    StudentTopicFlag,
+    TopicDifficultyItem,
 )
 from app.llm import get_llm_provider
-from app.services import classroom_course_service, impact_report_service, structure_access, structure_service
+from app.services import (
+    classroom_course_service, classroom_exercise_service, impact_report_service,
+    structure_access, structure_service, student_dashboard_service,
+)
 from app.services.whatsapp_service import whatsapp_service
 
 router = APIRouter(prefix="/structures", tags=["structures"])
@@ -658,6 +687,17 @@ def send_course(
     return CourseSendResult(new_recipients_count=len(new_recipients))
 
 
+@router.get("/my-deliveries", response_model=MyDeliveriesResponse)
+def get_my_deliveries(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    """Index de tout ce qu'un élève a reçu (cours, plans, exercices, évaluations),
+    tous confondus — corrige l'absence de tout point d'entrée listant ces envois."""
+    items = student_dashboard_service.list_my_deliveries(db, current_user.id)
+    return MyDeliveriesResponse(items=[DeliveryItem(**i) for i in items])
+
+
 @router.get("/classroom-courses/{course_id}/my-progress", response_model=MyCourseProgressResponse)
 def get_my_course_progress(
     course_id: uuid.UUID,
@@ -775,6 +815,327 @@ async def generate_evolution_plans(
     )
     db.commit()
     return GenerateEvolutionPlansResult(plans_generated=len(plans))
+
+
+# ── Exercices / évaluations (QCM) ─────────────────────────────────────────────
+
+
+def _exercise_answer_key_response(exercise) -> ExerciseResponse:
+    return ExerciseResponse(
+        id=str(exercise.id), classroom_id=str(exercise.classroom_id), title=exercise.title,
+        subject=exercise.subject, kind=exercise.kind.value, topic_hint=exercise.topic_hint,
+        instructions=exercise.instructions,
+        source_course_id=str(exercise.source_course_id) if exercise.source_course_id else None,
+        created_at=exercise.created_at,
+        questions=[
+            ExerciseQuestionAnswerKeyResponse(
+                id=str(q.id), prompt=q.prompt, choices=q.choices,
+                correct_choice_index=q.correct_choice_index, explanation=q.explanation,
+                points=q.points, order=q.order, topic_tag=q.topic_tag,
+            )
+            for q in exercise.questions
+        ],
+    )
+
+
+@router.post(
+    "/{structure_id}/classrooms/{classroom_id}/exercises", response_model=ExerciseResponse,
+)
+async def create_exercise(
+    structure_id: uuid.UUID,
+    classroom_id: uuid.UUID,
+    body: ExerciseCreate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    _require_classroom_admin(db, current_user.id, structure_id, classroom_id)
+    exercise = await classroom_exercise_service.create_exercise(
+        db, classroom_id=classroom_id, created_by_user_id=current_user.id,
+        title=body.title, topic_hint=body.topic_hint, subject=body.subject,
+        kind=ClassroomExerciseKind(body.kind), question_count=body.question_count,
+        source_course_id=uuid.UUID(body.source_course_id) if body.source_course_id else None,
+    )
+    db.commit()
+    return _exercise_answer_key_response(exercise)
+
+
+@router.patch(
+    "/{structure_id}/classrooms/{classroom_id}/exercises/{exercise_id}/questions",
+    response_model=ExerciseResponse,
+)
+def update_exercise_questions(
+    structure_id: uuid.UUID,
+    classroom_id: uuid.UUID,
+    exercise_id: uuid.UUID,
+    body: ExerciseQuestionsUpdate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    _require_classroom_admin(db, current_user.id, structure_id, classroom_id)
+    exercise = classroom_exercise_service.update_exercise_questions(
+        db, exercise_id=exercise_id, questions=body.questions,
+    )
+    db.commit()
+    return _exercise_answer_key_response(exercise)
+
+
+@router.get(
+    "/{structure_id}/classrooms/{classroom_id}/exercises", response_model=list[ExerciseListItem],
+)
+def list_exercises(
+    structure_id: uuid.UUID,
+    classroom_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    kind: Literal["exercise", "evaluation"] | None = None,
+):
+    _require_classroom_admin(db, current_user.id, structure_id, classroom_id)
+    exercises = classroom_exercise_service.list_exercises(
+        db, classroom_id, ClassroomExerciseKind(kind) if kind else None,
+    )
+    items = []
+    for e in exercises:
+        recipients_count = len(db.execute(
+            select(ClassroomExerciseRecipient).where(ClassroomExerciseRecipient.exercise_id == e.id)
+        ).scalars().all())
+        items.append(ExerciseListItem(
+            id=str(e.id), classroom_id=str(e.classroom_id), title=e.title, subject=e.subject,
+            kind=e.kind.value, created_at=e.created_at, questions_count=len(e.questions),
+            recipients_count=recipients_count,
+        ))
+    return items
+
+
+@router.get(
+    "/{structure_id}/classrooms/{classroom_id}/exercises/{exercise_id}", response_model=ExerciseResponse,
+)
+def get_exercise(
+    structure_id: uuid.UUID,
+    classroom_id: uuid.UUID,
+    exercise_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    _require_classroom_admin(db, current_user.id, structure_id, classroom_id)
+    exercise = classroom_exercise_service.get_exercise(db, exercise_id)
+    return _exercise_answer_key_response(exercise)
+
+
+@router.post(
+    "/{structure_id}/classrooms/{classroom_id}/exercises/{exercise_id}/send",
+    response_model=ExerciseSendResult,
+)
+def send_exercise(
+    structure_id: uuid.UUID,
+    classroom_id: uuid.UUID,
+    exercise_id: uuid.UUID,
+    body: ExerciseSendRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    _require_classroom_admin(db, current_user.id, structure_id, classroom_id)
+    new_recipients = classroom_exercise_service.send_exercise(
+        db, exercise_id=exercise_id, target=body.target,
+        student_user_id=uuid.UUID(body.student_user_id) if body.student_user_id else None,
+    )
+    db.commit()
+    return ExerciseSendResult(new_recipients_count=len(new_recipients))
+
+
+@router.get(
+    "/{structure_id}/classrooms/{classroom_id}/exercises/{exercise_id}/results",
+    response_model=ExerciseResultsMatrixResponse,
+)
+def get_exercise_results(
+    structure_id: uuid.UUID,
+    classroom_id: uuid.UUID,
+    exercise_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    _require_classroom_admin(db, current_user.id, structure_id, classroom_id)
+    exercise = classroom_exercise_service.get_exercise(db, exercise_id)
+    matrix = classroom_exercise_service.get_results_matrix(db, exercise_id=exercise_id)
+
+    recipients = []
+    for recipient, submission in matrix:
+        user = db.get(User, recipient.user_id)
+        membership = db.execute(
+            select(ClassroomMembership).where(
+                ClassroomMembership.user_id == recipient.user_id,
+                ClassroomMembership.classroom_id == classroom_id,
+            )
+        ).scalar_one_or_none()
+        if membership:
+            user_name = f"{membership.requested_first_name} {membership.requested_last_name}".strip()
+        elif user and user.profile:
+            parts = [user.profile.first_name, user.profile.last_name]
+            user_name = " ".join(p for p in parts if p) or None
+        else:
+            user_name = None
+        recipients.append(ExerciseRecipientResult(
+            user_id=str(recipient.user_id), user_email=user.email if user else None,
+            user_name=user_name or None, attempted=submission is not None,
+            score_pct=submission.score_pct if submission else None,
+            submitted_at=submission.submitted_at if submission else None,
+        ))
+
+    return ExerciseResultsMatrixResponse(
+        exercise_id=str(exercise.id), title=exercise.title, kind=exercise.kind.value, recipients=recipients,
+    )
+
+
+@router.get(
+    "/{structure_id}/classrooms/{classroom_id}/difficulty", response_model=ClassroomDifficultyReportResponse,
+)
+def get_classroom_difficulty(
+    structure_id: uuid.UUID,
+    classroom_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    _require_classroom_admin(db, current_user.id, structure_id, classroom_id)
+    report = classroom_exercise_service.get_classroom_difficulty_report(db, classroom_id=classroom_id)
+    return ClassroomDifficultyReportResponse(
+        students=[
+            ClassroomDifficultyStudentItem(
+                user_id=str(s["user_id"]), user_name=s["user_name"], avg_score_pct=s["avg_score_pct"],
+                flagged_topics=[StudentTopicFlag(**f) for f in s["flagged_topics"]], trend=s["trend"],
+            )
+            for s in report["students"]
+        ],
+        topics=[TopicDifficultyItem(**t) for t in report["topics"]],
+        insufficient_data=report["insufficient_data"],
+    )
+
+
+@router.get(
+    "/{structure_id}/classrooms/{classroom_id}/difficulty/{user_id}",
+    response_model=StudentDifficultyDetailResponse,
+)
+def get_student_difficulty(
+    structure_id: uuid.UUID,
+    classroom_id: uuid.UUID,
+    user_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    _require_classroom_admin(db, current_user.id, structure_id, classroom_id)
+    detail = classroom_exercise_service.get_student_difficulty_detail(
+        db, classroom_id=classroom_id, user_id=user_id,
+    )
+    student = detail["student"]
+    return StudentDifficultyDetailResponse(
+        insufficient_data=detail["insufficient_data"],
+        student=ClassroomDifficultyStudentItem(
+            user_id=str(student["user_id"]), user_name=student["user_name"],
+            avg_score_pct=student["avg_score_pct"],
+            flagged_topics=[StudentTopicFlag(**f) for f in student["flagged_topics"]], trend=student["trend"],
+        ) if student else None,
+    )
+
+
+@router.get("/classroom-exercises/{exercise_id}/take", response_model=ExerciseTakeResponse)
+def get_exercise_to_take(
+    exercise_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    exercise = classroom_exercise_service.get_exercise_for_student(
+        db, exercise_id=exercise_id, user_id=current_user.id,
+    )
+    return ExerciseTakeResponse(
+        exercise_id=str(exercise.id), title=exercise.title, instructions=exercise.instructions,
+        kind=exercise.kind.value,
+        questions=[
+            ExerciseTakeQuestion(id=str(q.id), prompt=q.prompt, choices=q.choices, order=q.order)
+            for q in exercise.questions
+        ],
+    )
+
+
+@router.post("/classroom-exercises/{exercise_id}/start", response_model=ExerciseSubmissionResponse)
+def start_exercise_submission(
+    exercise_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    submission = classroom_exercise_service.start_submission(
+        db, exercise_id=exercise_id, user_id=current_user.id,
+    )
+    db.commit()
+    return ExerciseSubmissionResponse(
+        submission_id=str(submission.id), attempt_number=submission.attempt_number,
+        status=submission.status.value,
+    )
+
+
+def _exercise_result_response(exercise, submission, answers) -> ExerciseResultResponse:
+    questions_by_id = {q.id: q for q in exercise.questions}
+    return ExerciseResultResponse(
+        exercise_id=str(exercise.id), attempt_number=submission.attempt_number,
+        status=submission.status.value, score_points=submission.score_points,
+        max_points=submission.max_points, score_pct=submission.score_pct,
+        submitted_at=submission.submitted_at,
+        answers=[
+            ExerciseAnswerResult(
+                question_id=str(a.question_id), prompt=questions_by_id[a.question_id].prompt,
+                choices=questions_by_id[a.question_id].choices,
+                selected_choice_index=a.selected_choice_index,
+                correct_choice_index=questions_by_id[a.question_id].correct_choice_index,
+                is_correct=a.is_correct,
+                explanation=questions_by_id[a.question_id].explanation,
+            )
+            for a in answers if a.question_id in questions_by_id
+        ],
+    )
+
+
+@router.post("/classroom-exercises/{exercise_id}/submit", response_model=ExerciseResultResponse)
+def submit_exercise(
+    exercise_id: uuid.UUID,
+    body: ExerciseSubmitRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    submission = classroom_exercise_service.submit_exercise(
+        db, exercise_id=exercise_id, user_id=current_user.id,
+        answers=[(uuid.UUID(a.question_id), a.selected_choice_index) for a in body.answers],
+    )
+    db.commit()
+    exercise = classroom_exercise_service.get_exercise(db, exercise_id)
+    answers = db.execute(
+        select(ClassroomExerciseAnswer).where(ClassroomExerciseAnswer.submission_id == submission.id)
+    ).scalars().all()
+    return _exercise_result_response(exercise, submission, answers)
+
+
+@router.get("/classroom-exercises/{exercise_id}/my-result", response_model=ExerciseResultResponse)
+def get_my_exercise_result(
+    exercise_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    attempt_number: int | None = None,
+):
+    exercise, submission, answers = classroom_exercise_service.get_my_result(
+        db, exercise_id=exercise_id, user_id=current_user.id, attempt_number=attempt_number,
+    )
+    return _exercise_result_response(exercise, submission, answers)
+
+
+@router.get("/classroom-exercises/{exercise_id}/my-attempts", response_model=list[ExerciseAttemptSummary])
+def get_my_exercise_attempts(
+    exercise_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    attempts = classroom_exercise_service.get_my_attempts(db, exercise_id=exercise_id, user_id=current_user.id)
+    return [
+        ExerciseAttemptSummary(
+            attempt_number=a.attempt_number, score_pct=a.score_pct, submitted_at=a.submitted_at,
+        )
+        for a in attempts
+    ]
 
 
 # ── Rapports d'impact pour bailleurs/accréditations (Phase 5) ────────────────
