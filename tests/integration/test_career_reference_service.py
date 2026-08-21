@@ -62,6 +62,35 @@ class TestSearchForAgent:
         assert "Technicien agricole" in titles
         assert "Développeur web" not in titles
 
+    def test_les_competences_liste_alimentent_le_matching(self, db_session):
+        """Profile.skills en forme liste (['Python', ...]) doit participer au
+        matching, au même titre qu'interests — condition du schéma "compétences
+        actuelles → contexte → offres" appliqué à tous les agents."""
+        _make_career(db_session, title="Développeur web", category="Informatique")
+        _make_career(db_session, title="Infirmier", category="Santé")
+
+        results = CareerReferenceService(db_session).search_for_agent(
+            profile={"country": "CI", "skills": ["informatique"]},
+            message="je ne sais pas quoi faire",
+        )
+        titles = [r["title"] for r in results]
+        assert "Développeur web" in titles
+        assert "Infirmier" not in titles
+
+    def test_les_competences_dict_alimentent_le_matching(self, db_session):
+        """Profile.skills en forme dict ({"Python": "avancé"}) doit aussi
+        participer — la forme réelle en base varie selon l'étape d'inscription."""
+        _make_career(db_session, title="Développeur web", category="Informatique")
+        _make_career(db_session, title="Infirmier", category="Santé")
+
+        results = CareerReferenceService(db_session).search_for_agent(
+            profile={"country": "CI", "skills": {"informatique": "avancé"}},
+            message="je ne sais pas quoi faire",
+        )
+        titles = [r["title"] for r in results]
+        assert "Développeur web" in titles
+        assert "Infirmier" not in titles
+
     def test_filtre_par_mots_cles(self, db_session):
         _make_career(db_session, title="Développeur web", category="Informatique")
         _make_career(db_session, title="Infirmier", category="Santé")

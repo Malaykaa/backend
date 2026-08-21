@@ -45,6 +45,22 @@ def _parse_career_ref(career_ref: str) -> uuid.UUID | None:
         return None
 
 
+def _flatten_skills(value) -> str | None:
+    """`Profile.skills` n'a jamais eu de forme unique selon l'étape d'inscription
+    qui l'a écrit : liste de chaînes ou dict (`{"Python": "avancé"}`). On prend
+    tout ce qui est exploitable des deux côtés (clés et valeurs pour un dict)
+    plutôt que de parier sur une forme précise (même logique que
+    `service_matching._flatten_json_field`, dupliquée ici pour ne pas coupler
+    ce service à un autre)."""
+    if isinstance(value, dict):
+        parts = [str(v) for v in list(value.keys()) + list(value.values()) if v]
+    elif isinstance(value, list):
+        parts = [str(v) for v in value if v]
+    else:
+        return None
+    return " ".join(parts) or None
+
+
 def _keywords(*texts: str | None) -> list[str]:
     words: list[str] = []
     for text in texts:
@@ -75,7 +91,11 @@ class CareerReferenceService:
 
         interests = profile.get("interests")
         interests_text = " ".join(interests) if isinstance(interests, list) else None
-        keywords = _keywords(message, profile.get("domain"), profile.get("field_of_study"), interests_text)
+        skills_text = _flatten_skills(profile.get("skills"))
+        keywords = _keywords(
+            message, profile.get("domain"), profile.get("field_of_study"),
+            interests_text, skills_text,
+        )
         if keywords:
             conditions = [
                 or_(

@@ -12,6 +12,12 @@ from app.repositories.base import BaseRepository
 
 
 # Mapping intent agent → types d'offres pertinents
+#
+# "orientation", "freelance" et "coursework" manquaient ici alors que
+# ChatService._enrich_with_offers ne les excluait déjà pas (seuls
+# document/free le sont) : le lookup ci-dessous retournait donc toujours []
+# pour ces trois agents (get() sur clé absente → None → search_for_agent
+# renvoie [] immédiatement) — bug silencieux, aucune erreur ne le signalait.
 _INTENT_OFFER_TYPES: dict[str, list[ScrapedOfferType]] = {
     "career": [ScrapedOfferType.job, ScrapedOfferType.formation, ScrapedOfferType.opportunity],
     "scholarship": [ScrapedOfferType.scholarship, ScrapedOfferType.grant, ScrapedOfferType.formation],
@@ -19,6 +25,9 @@ _INTENT_OFFER_TYPES: dict[str, list[ScrapedOfferType]] = {
     "tender": [ScrapedOfferType.call_for_applications, ScrapedOfferType.partnership],
     "study_grant": [ScrapedOfferType.scholarship, ScrapedOfferType.formation, ScrapedOfferType.opportunity],
     "exam": [ScrapedOfferType.formation, ScrapedOfferType.resource],
+    "orientation": [ScrapedOfferType.job, ScrapedOfferType.formation, ScrapedOfferType.opportunity],
+    "freelance": [ScrapedOfferType.job, ScrapedOfferType.opportunity],
+    "coursework": [ScrapedOfferType.formation, ScrapedOfferType.resource],
 }
 
 

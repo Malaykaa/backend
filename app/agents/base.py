@@ -172,6 +172,45 @@ metiers: career:1a2b3c | career:4d5e6f
 - Langue : français."""
 
 
+# Méthode d'accompagnement commune à tous les agents spécialisés (hors document/
+# chat libre, cf. _ACCOMPANIMENT_EXCLUDED_GOAL_TYPES) — injectée une seule fois
+# ici plutôt que dupliquée dans chaque SYSTEM_PROMPT, pour que toute demande
+# (y compris ponctuelle, ex. "je cherche un stage") resitue systématiquement
+# la personne dans une progression vers son objectif, pas juste une réponse
+# isolée à sa question du moment.
+_ACCOMPANIMENT_METHOD = """\
+## Méthode d'accompagnement
+Avant de répondre, raisonne dans cet ordre — même pour une demande ponctuelle \
+("je cherche un stage", "une bourse", "une mission") :
+1. **Compétences et situation actuelles** — ce que la personne sait déjà faire \
+et où elle en est (profil, compétences déclarées, message, historique).
+2. **Contexte** — ses intérêts, sa description personnelle, son domaine/filière, \
+ses contraintes réelles (pays, temps, moyens) telles qu'exprimées dans son profil \
+ou la conversation. Ne les redemande pas si elles sont déjà connues.
+3. **Ce qu'il lui manque pour avancer** — l'écart entre sa situation actuelle et \
+son objectif : compétence à développer, formation ou étape concrète à suivre. \
+Si des fiches métiers candidates te sont fournies (clé `metiers`), base-toi \
+dessus pour les compétences/formations réelles — n'en invente jamais.
+4. **Offres concrètes** — si des offres réelles te sont fournies comme candidates \
+(stages, emplois, bourses, missions, appels à projet...), propose celles qui \
+font vraiment progresser cette personne vers son objectif, cf. clé `offers`. \
+S'il n'y en a aucune de pertinente, dis-le plutôt que d'en inventer.
+Ne te limite jamais à lister des offres ou répondre à la question du moment : \
+resitue toujours la démarche compétences → contexte → prochaine étape → offres, \
+pour que la personne reparte avec un chemin concret vers son objectif, pas \
+seulement une réponse ponctuelle."""
+
+# AGENT_ID pour lesquels la méthode d'accompagnement ne s'applique pas :
+# document (génération formatée) et free (chat hors-scope) — mêmes exclusions
+# que les offres/métiers (cf. chat_service._enrich_with_offers/_careers) — plus
+# teacher_course et evolution_plan (Malayka Institution) : génération en une
+# passe sans conversation ni diagnostic, jamais de contexte offres/métiers.
+# Vérifié sur self.AGENT_ID (toujours fiable) plutôt que ctx.goal_type (peut
+# être None au premier message d'une conversation, y compris pour l'agent
+# générique hors-scope).
+_ACCOMPANIMENT_EXCLUDED_AGENT_IDS = {"document", "free", "teacher_course", "evolution_plan"}
+
+
 def _strip_fences(text: str) -> str:
     """Retire les balises markdown ``` autour du JSON si présentes.
 
@@ -507,6 +546,9 @@ class SpecializedAgent:
             {"role": "system", "content": GUARDRAILS_SHORT},
             {"role": "system", "content": _RESPONSE_FORMAT_INSTRUCTION},
         ]
+
+        if self.AGENT_ID not in _ACCOMPANIMENT_EXCLUDED_AGENT_IDS:
+            messages.append({"role": "system", "content": _ACCOMPANIMENT_METHOD})
 
         if ctx.profile:
             # self_description est un paragraphe libre — le sortir du résumé

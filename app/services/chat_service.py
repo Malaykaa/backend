@@ -399,11 +399,14 @@ class ChatService:
         """Enrichit goal_context avec des fiches métiers du référentiel curaté.
 
         Chemin séparé de _enrich_with_offers (pas réutilisable tel quel : le
-        référentiel métiers n'est pas un ScrapedOfferType) — porte stricte sur
-        le seul goal_type orientation, contrairement à la liste d'exclusion
-        des offres qui couvre tous les autres goal_types.
+        référentiel métiers n'est pas un ScrapedOfferType) — mais même liste
+        d'exclusion : les métiers candidats aident tout accompagnement vers un
+        objectif (stage, concours, bourse...), pas seulement l'orientation
+        explicite. Sert de base au raisonnement "compétences actuelles →
+        contexte → ce qu'il manque (formation) → offres" appliqué par tous les
+        agents spécialisés (cf. `base.py::_ACCOMPANIMENT_METHOD`).
         """
-        if goal_type != GoalType.ORIENTATION:
+        if not goal_type or goal_type in (GoalType.DOCUMENT, GoalType.FREE):
             return goal_context
         try:
             with db.begin_nested():
@@ -747,9 +750,10 @@ async def _enrich_with_careers_async(
 ) -> dict:
     """Enrichit goal_context avec des fiches métiers — mirroir de
     _enrich_with_offers_async, cf. ChatService._enrich_with_careers pour le
-    pourquoi d'un chemin séparé (porte stricte orientation, pas de liste
-    d'exclusion partagée avec les offres)."""
-    if goal_type != "orientation":
+    pourquoi d'un chemin séparé (même liste d'exclusion que les offres, plus
+    la même raison de ratisser large : tout agent d'accompagnement, pas
+    seulement l'orientation)."""
+    if not goal_type or goal_type in ("document", "free"):
         return goal_context
 
     def _sync_search() -> list[dict]:
