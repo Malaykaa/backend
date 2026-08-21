@@ -34,6 +34,8 @@ class ProfileUpdate(BaseModel):
     goals: dict | list | None = None
     preferred_content: str | None = Field(default=None, max_length=200)
     cv_url: str | None = None
+    interests: list[str] | None = None
+    self_description: str | None = Field(default=None, max_length=4000)
 
     @field_validator("gender", mode="before")
     @classmethod

@@ -66,6 +66,8 @@ def extract_profile(user) -> dict:
         "current_status":    user.profile.current_status,
         "preferred_content": user.profile.preferred_content,
         "skills":            user.profile.skills,
+        "interests":         user.profile.interests,
+        "self_description":  user.profile.self_description,
     }
 
 

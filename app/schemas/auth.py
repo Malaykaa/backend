@@ -200,6 +200,8 @@ class ProfileResponse(BaseModel):
     goals: dict | list | None = None
     preferred_content: str | None = None
     cv_url: str | None = None
+    interests: list | None = None
+    self_description: str | None = None
 
 
 class UserResponse(BaseModel):

@@ -1,0 +1,385 @@
+[
+  {
+    "title": "Développeur·se web",
+    "category": "Informatique",
+    "description": "Conçoit, développe et maintient des sites et applications web, du back-end à l'interface utilisateur.",
+    "key_skills": ["JavaScript/TypeScript", "HTML/CSS", "bases de données", "résolution de problèmes", "travail en équipe"],
+    "example_formations": [
+      {"label": "BTS Informatique de Gestion", "level": "Bac+2", "city": "Abidjan"},
+      {"label": "Licence Informatique — UFHB", "level": "Bac+3", "city": "Abidjan"},
+      {"label": "Ingénieur informatique — ESATIC", "level": "Bac+5", "city": "Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0 (France Travail). Contenu et formations non validés — à vérifier avant mise en production."
+  },
+  {
+    "title": "Administrateur·rice systèmes et réseaux",
+    "category": "Informatique",
+    "description": "Installe, configure et maintient les infrastructures informatiques (serveurs, réseaux, sécurité) d'une organisation.",
+    "key_skills": ["administration Linux/Windows", "réseaux", "sécurité informatique", "rigueur", "diagnostic de panne"],
+    "example_formations": [
+      {"label": "BTS Réseaux Informatiques et Télécommunications", "level": "Bac+2", "city": "Abidjan"},
+      {"label": "Licence Réseaux et Télécoms — ESATIC", "level": "Bac+3", "city": "Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Data analyst",
+    "category": "Informatique",
+    "description": "Collecte, nettoie et analyse des données pour produire des indicateurs et aider à la décision.",
+    "key_skills": ["SQL", "statistiques de base", "Excel avancé", "esprit d'analyse", "communication de résultats"],
+    "example_formations": [
+      {"label": "Licence Statistique-Économie — ENSEA", "level": "Bac+3", "city": "Abidjan"},
+      {"label": "Master Data Science", "level": "Bac+5", "city": "Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Infirmier·ère diplômé·e d'État",
+    "category": "Santé",
+    "description": "Assure les soins infirmiers, le suivi des patients et la coordination avec l'équipe médicale, en structure hospitalière ou communautaire.",
+    "key_skills": ["soins infirmiers", "sang-froid", "rigueur protocolaire", "empathie", "travail en équipe médicale"],
+    "example_formations": [
+      {"label": "Diplôme d'État Infirmier — INFAS (Institut National de Formation des Agents de Santé)", "level": "Bac+3", "city": "Abidjan / Bouaké"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Sage-femme",
+    "category": "Santé",
+    "description": "Accompagne la grossesse, l'accouchement et le suivi post-natal de la mère et du nouveau-né.",
+    "key_skills": ["soins obstétricaux", "calme sous pression", "écoute", "rigueur médicale"],
+    "example_formations": [
+      {"label": "Diplôme d'État de Sage-femme — INFAS", "level": "Bac+3", "city": "Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Technicien·ne de laboratoire médical",
+    "category": "Santé",
+    "description": "Réalise les analyses biologiques (sang, urines, prélèvements) qui appuient le diagnostic médical.",
+    "key_skills": ["rigueur analytique", "manipulation d'équipements de laboratoire", "respect des protocoles d'hygiène"],
+    "example_formations": [
+      {"label": "Diplôme de Technicien Supérieur de Laboratoire — INFAS", "level": "Bac+2/3", "city": "Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Technicien·ne agricole",
+    "category": "Agriculture",
+    "description": "Accompagne les producteurs dans l'amélioration des techniques de culture, la gestion des sols et des rendements.",
+    "key_skills": ["agronomie de base", "gestion de parcelle", "connaissance des filières locales (cacao, hévéa, anacarde)", "pédagogie de terrain"],
+    "example_formations": [
+      {"label": "BTS Agronomie / Techniques Agricoles", "level": "Bac+2", "city": "Yamoussoukro / Bouaké"},
+      {"label": "Ingénieur agronome — INP-HB", "level": "Bac+5", "city": "Yamoussoukro"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé — filières citées à confirmer."
+  },
+  {
+    "title": "Agroéconomiste",
+    "category": "Agriculture",
+    "description": "Analyse les filières agricoles (production, transformation, commercialisation) pour conseiller producteurs, coopératives ou institutions.",
+    "key_skills": ["économie agricole", "analyse de filière", "rédaction de rapports", "connaissance du secteur rural"],
+    "example_formations": [
+      {"label": "Ingénieur agroéconomiste — INP-HB", "level": "Bac+5", "city": "Yamoussoukro"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Technicien·ne en agroalimentaire",
+    "category": "Agriculture",
+    "description": "Supervise la transformation et le contrôle qualité des produits agricoles (cacao, anacarde, produits vivriers) en unité de production.",
+    "key_skills": ["contrôle qualité", "hygiène et sécurité alimentaire", "process industriel", "rigueur"],
+    "example_formations": [
+      {"label": "BTS Industries Agroalimentaires", "level": "Bac+2", "city": "Yamoussoukro"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Technicien·ne du bâtiment / Génie civil",
+    "category": "BTP",
+    "description": "Participe à la conception, au suivi et au contrôle de chantiers de construction (bâtiments, routes, ouvrages).",
+    "key_skills": ["lecture de plans", "métré", "suivi de chantier", "notions de résistance des matériaux", "sécurité chantier"],
+    "example_formations": [
+      {"label": "BTS Génie Civil / Bâtiment", "level": "Bac+2", "city": "Abidjan / Yamoussoukro"},
+      {"label": "Ingénieur Génie Civil — INP-HB", "level": "Bac+5", "city": "Yamoussoukro"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Électricien·ne bâtiment",
+    "category": "BTP",
+    "description": "Installe et entretient les réseaux électriques dans les bâtiments résidentiels, commerciaux ou industriels.",
+    "key_skills": ["normes électriques", "lecture de schémas", "sécurité électrique", "minutie"],
+    "example_formations": [
+      {"label": "CAP/BT Électricité — lycée technique", "level": "Bac ou infra", "city": "Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Architecte",
+    "category": "BTP",
+    "description": "Conçoit des projets de construction ou de rénovation, de l'esquisse au suivi de réalisation, en intégrant contraintes techniques et esthétiques.",
+    "key_skills": ["conception architecturale", "logiciels de CAO/DAO", "gestion de projet", "créativité", "réglementation urbanisme"],
+    "example_formations": [
+      {"label": "Diplôme d'architecte — INP-HB ou école d'architecture", "level": "Bac+5", "city": "Yamoussoukro"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Comptable",
+    "category": "Finance / Gestion",
+    "description": "Tient la comptabilité d'une entreprise ou organisation : saisie, déclarations, états financiers, conformité fiscale.",
+    "key_skills": ["comptabilité générale (SYSCOHADA)", "rigueur", "logiciels comptables", "fiscalité de base"],
+    "example_formations": [
+      {"label": "BTS Comptabilité et Gestion", "level": "Bac+2", "city": "Abidjan"},
+      {"label": "Licence/Master en Comptabilité-Contrôle-Audit", "level": "Bac+3 à Bac+5", "city": "Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé — référentiel SYSCOHADA à confirmer selon l'évolution réglementaire."
+  },
+  {
+    "title": "Analyste financier·ère",
+    "category": "Finance / Gestion",
+    "description": "Évalue la performance financière d'une entreprise ou d'un projet pour appuyer des décisions d'investissement ou de gestion.",
+    "key_skills": ["analyse financière", "modélisation Excel", "esprit critique", "rédaction de rapports"],
+    "example_formations": [
+      {"label": "Master Finance — ENSEA ou université", "level": "Bac+5", "city": "Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Chargé·e de clientèle bancaire",
+    "category": "Finance / Gestion",
+    "description": "Conseille et accompagne les clients d'une banque ou institution de microfinance dans leurs opérations et produits financiers.",
+    "key_skills": ["relation client", "produits bancaires", "sens commercial", "rigueur"],
+    "example_formations": [
+      {"label": "BTS Banque-Finance / Licence Gestion", "level": "Bac+2 à Bac+3", "city": "Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Enseignant·e du primaire/secondaire",
+    "category": "Éducation",
+    "description": "Conçoit et anime des cours, évalue les apprentissages et accompagne les élèves dans un établissement scolaire.",
+    "key_skills": ["pédagogie", "maîtrise disciplinaire", "gestion de classe", "patience", "communication"],
+    "example_formations": [
+      {"label": "CAFOP (Centre d'Animation et de Formation Pédagogique) — primaire", "level": "Bac+2", "city": "plusieurs villes"},
+      {"label": "ENS (École Normale Supérieure) — secondaire", "level": "Bac+3 à Bac+5", "city": "Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé — modalités d'accès (concours) à confirmer."
+  },
+  {
+    "title": "Formateur·rice en formation professionnelle",
+    "category": "Éducation",
+    "description": "Conçoit et anime des formations techniques ou professionnelles pour adultes ou jeunes en insertion.",
+    "key_skills": ["ingénierie pédagogique", "expertise métier", "animation de groupe", "évaluation de compétences"],
+    "example_formations": [
+      {"label": "Expérience métier + certification pédagogique complémentaire", "level": "variable", "city": "Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Chauffeur·se professionnel·le / Conducteur·rice routier",
+    "category": "Transport / Logistique",
+    "description": "Conduit des véhicules de transport de personnes ou de marchandises dans le respect du code de la route et des délais.",
+    "key_skills": ["permis de conduire adapté", "connaissance du réseau routier", "ponctualité", "entretien de base du véhicule"],
+    "example_formations": [
+      {"label": "Permis professionnel + formation transport de marchandises/personnes", "level": "infra-bac", "city": "Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Responsable logistique / supply chain",
+    "category": "Transport / Logistique",
+    "description": "Organise les flux de marchandises (approvisionnement, stockage, distribution) pour optimiser coûts et délais.",
+    "key_skills": ["gestion de stock", "planification", "négociation fournisseurs", "outils de gestion logistique"],
+    "example_formations": [
+      {"label": "BTS Logistique et Transport", "level": "Bac+2", "city": "Abidjan"},
+      {"label": "Licence/Master Logistique", "level": "Bac+3 à Bac+5", "city": "Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Mécanicien·ne automobile",
+    "category": "Mécanique / Industrie",
+    "description": "Diagnostique et répare les pannes mécaniques, électriques et électroniques des véhicules.",
+    "key_skills": ["diagnostic mécanique", "utilisation d'outils de diagnostic", "minutie", "connaissance des moteurs"],
+    "example_formations": [
+      {"label": "CAP/BT Mécanique Automobile — lycée technique", "level": "Bac ou infra", "city": "Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Technicien·ne de maintenance industrielle",
+    "category": "Mécanique / Industrie",
+    "description": "Assure l'entretien préventif et curatif des équipements de production dans une usine ou une unité industrielle.",
+    "key_skills": ["mécanique/électrotechnique", "diagnostic de panne", "sécurité industrielle", "lecture de plans techniques"],
+    "example_formations": [
+      {"label": "BTS Maintenance Industrielle", "level": "Bac+2", "city": "Yamoussoukro / Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Couturier·ère / Styliste-modéliste",
+    "category": "Artisanat / Mode",
+    "description": "Conçoit et confectionne des vêtements, du patron à la pièce finie, pour une clientèle privée ou une marque.",
+    "key_skills": ["couture", "création de patrons", "sens esthétique", "connaissance des tissus"],
+    "example_formations": [
+      {"label": "Formation en stylisme-modélisme — INSAAC ou centre de formation professionnelle", "level": "infra-bac à Bac+2", "city": "Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Menuisier·ère / Ébéniste",
+    "category": "Artisanat",
+    "description": "Fabrique et répare des meubles et structures en bois, sur mesure ou en série.",
+    "key_skills": ["travail du bois", "lecture de plans", "précision manuelle", "sens du détail"],
+    "example_formations": [
+      {"label": "CAP Menuiserie — centre de formation professionnelle", "level": "infra-bac", "city": "Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Guide touristique",
+    "category": "Tourisme / Hôtellerie",
+    "description": "Accompagne des visiteurs sur des circuits touristiques, culturels ou naturels, en partageant connaissances et sécurité du groupe.",
+    "key_skills": ["connaissance du patrimoine local", "langues étrangères", "sens du contact", "gestion de groupe"],
+    "example_formations": [
+      {"label": "Formation en tourisme/guide — école hôtelière", "level": "Bac+2", "city": "Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Responsable d'hébergement / Hôtellerie",
+    "category": "Tourisme / Hôtellerie",
+    "description": "Gère l'accueil, le service et la satisfaction client dans un établissement hôtelier.",
+    "key_skills": ["gestion hôtelière", "sens du service", "gestion d'équipe", "langues étrangères"],
+    "example_formations": [
+      {"label": "BTS Hôtellerie-Restauration", "level": "Bac+2", "city": "Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Juriste d'entreprise",
+    "category": "Droit",
+    "description": "Conseille une entreprise sur les aspects juridiques de son activité (contrats, conformité, contentieux).",
+    "key_skills": ["droit des affaires", "rédaction juridique", "rigueur analytique", "veille réglementaire"],
+    "example_formations": [
+      {"label": "Licence/Master en Droit — UFHB", "level": "Bac+3 à Bac+5", "city": "Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Notaire / Auxiliaire de justice",
+    "category": "Droit",
+    "description": "Authentifie des actes juridiques (ventes, successions, contrats) et conseille les particuliers et entreprises.",
+    "key_skills": ["droit civil", "rigueur", "confidentialité", "relation client"],
+    "example_formations": [
+      {"label": "Master en Droit + formation professionnelle notariale", "level": "Bac+5 et plus", "city": "Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé — modalités d'accès à la profession à confirmer."
+  },
+  {
+    "title": "Journaliste",
+    "category": "Communication / Médias",
+    "description": "Recherche, vérifie et rédige des contenus d'actualité pour la presse écrite, radio, TV ou web.",
+    "key_skills": ["rédaction", "esprit critique", "vérification des faits", "aisance à l'oral (radio/TV)"],
+    "example_formations": [
+      {"label": "École de journalisme (ISTC-Polytechnique ou équivalent)", "level": "Bac+3 à Bac+5", "city": "Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Chargé·e de communication / Community manager",
+    "category": "Communication / Médias",
+    "description": "Conçoit et anime la communication (réseaux sociaux, contenus, événements) d'une organisation ou d'une marque.",
+    "key_skills": ["rédaction web", "réseaux sociaux", "créativité", "sens de l'image de marque"],
+    "example_formations": [
+      {"label": "Licence Communication / Marketing digital", "level": "Bac+3", "city": "Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Technicien·ne en énergies renouvelables",
+    "category": "Environnement / Énergie",
+    "description": "Installe et entretient des équipements d'énergie solaire ou renouvelable, pour des sites isolés ou raccordés.",
+    "key_skills": ["électrotechnique", "notions de panneaux solaires", "sécurité électrique", "adaptabilité terrain"],
+    "example_formations": [
+      {"label": "BTS Électrotechnique / spécialisation énergies renouvelables", "level": "Bac+2", "city": "Yamoussoukro"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé — filière émergente, offre de formation locale à vérifier précisément."
+  },
+  {
+    "title": "Sage-femme communautaire / Agent de santé communautaire",
+    "category": "Santé",
+    "description": "Assure la sensibilisation, le suivi de proximité et l'orientation sanitaire des populations, notamment en zone rurale.",
+    "key_skills": ["sensibilisation communautaire", "premiers secours de base", "écoute", "mobilité terrain"],
+    "example_formations": [
+      {"label": "Formation d'agent de santé communautaire — ministère de la Santé / ONG", "level": "infra-bac à Bac+2", "city": "variable"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Entrepreneur·se / Créateur·rice d'entreprise",
+    "category": "Entrepreneuriat",
+    "description": "Conçoit, lance et développe sa propre activité — pas un métier au sens classique, mais une voie fréquemment envisagée en orientation.",
+    "key_skills": ["gestion de projet", "prise de risque mesurée", "vente/négociation", "résilience", "gestion financière de base"],
+    "example_formations": [
+      {"label": "Formation en entrepreneuriat / incubateur (ex. programmes CGECI, Orange Fab)", "level": "variable, souvent post-diplôme", "city": "Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé — noms de programmes d'accompagnement à vérifier et actualiser régulièrement (offre changeante)."
+  },
+  {
+    "title": "Ingénieur·e en télécommunications",
+    "category": "Informatique",
+    "description": "Conçoit, déploie et supervise des réseaux de télécommunications (mobile, fibre, satellite).",
+    "key_skills": ["réseaux télécoms", "mathématiques appliquées", "résolution de problèmes techniques", "veille technologique"],
+    "example_formations": [
+      {"label": "Ingénieur Télécommunications — INP-HB ou ESATIC", "level": "Bac+5", "city": "Yamoussoukro / Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  },
+  {
+    "title": "Pharmacien·ne",
+    "category": "Santé",
+    "description": "Dispense des médicaments, conseille les patients et veille à la sécurité pharmaceutique, en officine ou en industrie.",
+    "key_skills": ["pharmacologie", "rigueur réglementaire", "conseil patient", "gestion d'officine"],
+    "example_formations": [
+      {"label": "Doctorat en Pharmacie — UFHB (UFR Sciences Pharmaceutiques)", "level": "Bac+6", "city": "Abidjan"}
+    ],
+    "country": "CI",
+    "source_note": "Structure adaptée du ROME 4.0. Contenu non validé."
+  }
+]

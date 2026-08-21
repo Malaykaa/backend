@@ -39,8 +39,12 @@ def _make_user():
     profile.country = "Sénégal"
     profile.primary_role = "student"
     profile.domain = "Sciences"
+    profile.field_of_study = None
     profile.current_status = "Étudiante"
+    profile.preferred_content = None
     profile.skills = None
+    profile.interests = None
+    profile.self_description = None
     profile.cv_url = None
 
     user.profile = profile
@@ -126,7 +130,12 @@ class TestExtractProfile:
             "country": "Sénégal",
             "primary_role": "student",
             "domain": "Sciences",
+            "field_of_study": None,
             "current_status": "Étudiante",
+            "preferred_content": None,
+            "skills": None,
+            "interests": None,
+            "self_description": None,
         }
 
     def test_user_without_profile_returns_empty(self):

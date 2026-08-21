@@ -147,6 +147,20 @@ Exemple :
 offers: scraped:1a2b3c | scraped:4d5e6f
 @@END@@
 
+### Métiers réels (clé `metiers`, si des fiches métiers candidates te sont fournies)
+Même principe que les offres : ce sont des CANDIDATES (recherche par pays et mots-clés),
+PAS un jugement de pertinence. C'est TOI qui juges lesquelles correspondent vraiment.
+- Si une ou plusieurs correspondent vraiment : liste leurs références dans
+  `metiers: réf1 | réf2`.
+- Si AUCUNE ne correspond : omets la clé, ou laisse-la vide.
+- Ne recopie JAMAIS le titre, les compétences ou les formations toi-même dans le
+  Markdown — la carte affichée les récupère en base à partir de la référence.
+
+Exemple :
+@@META@@
+metiers: career:1a2b3c | career:4d5e6f
+@@END@@
+
 ### Règles STRICTES
 - **clarifications et steps sont MUTUELLEMENT EXCLUSIFS** : si tu poses des questions → clarifications, PAS de steps. Si tu donnes un plan → steps, PAS de clarifications.
 - **Question explicative** (comment, pourquoi, explique) : réponds en Markdown. PAS de steps ni clarifications.
@@ -156,6 +170,45 @@ offers: scraped:1a2b3c | scraped:4d5e6f
 - **Ne répète PAS** des questions déjà posées si l'utilisateur y a répondu.
 - Le bloc @@META@@ est OPTIONNEL. Omets-le si tu n'as rien à structurer.
 - Langue : français."""
+
+
+# Méthode d'accompagnement commune à tous les agents spécialisés (hors document/
+# chat libre, cf. _ACCOMPANIMENT_EXCLUDED_GOAL_TYPES) — injectée une seule fois
+# ici plutôt que dupliquée dans chaque SYSTEM_PROMPT, pour que toute demande
+# (y compris ponctuelle, ex. "je cherche un stage") resitue systématiquement
+# la personne dans une progression vers son objectif, pas juste une réponse
+# isolée à sa question du moment.
+_ACCOMPANIMENT_METHOD = """\
+## Méthode d'accompagnement
+Avant de répondre, raisonne dans cet ordre — même pour une demande ponctuelle \
+("je cherche un stage", "une bourse", "une mission") :
+1. **Compétences et situation actuelles** — ce que la personne sait déjà faire \
+et où elle en est (profil, compétences déclarées, message, historique).
+2. **Contexte** — ses intérêts, sa description personnelle, son domaine/filière, \
+ses contraintes réelles (pays, temps, moyens) telles qu'exprimées dans son profil \
+ou la conversation. Ne les redemande pas si elles sont déjà connues.
+3. **Ce qu'il lui manque pour avancer** — l'écart entre sa situation actuelle et \
+son objectif : compétence à développer, formation ou étape concrète à suivre. \
+Si des fiches métiers candidates te sont fournies (clé `metiers`), base-toi \
+dessus pour les compétences/formations réelles — n'en invente jamais.
+4. **Offres concrètes** — si des offres réelles te sont fournies comme candidates \
+(stages, emplois, bourses, missions, appels à projet...), propose celles qui \
+font vraiment progresser cette personne vers son objectif, cf. clé `offers`. \
+S'il n'y en a aucune de pertinente, dis-le plutôt que d'en inventer.
+Ne te limite jamais à lister des offres ou répondre à la question du moment : \
+resitue toujours la démarche compétences → contexte → prochaine étape → offres, \
+pour que la personne reparte avec un chemin concret vers son objectif, pas \
+seulement une réponse ponctuelle."""
+
+# AGENT_ID pour lesquels la méthode d'accompagnement ne s'applique pas :
+# document (génération formatée) et free (chat hors-scope) — mêmes exclusions
+# que les offres/métiers (cf. chat_service._enrich_with_offers/_careers) — plus
+# teacher_course et evolution_plan (Malayka Institution) : génération en une
+# passe sans conversation ni diagnostic, jamais de contexte offres/métiers.
+# Vérifié sur self.AGENT_ID (toujours fiable) plutôt que ctx.goal_type (peut
+# être None au premier message d'une conversation, y compris pour l'agent
+# générique hors-scope).
+_ACCOMPANIMENT_EXCLUDED_AGENT_IDS = {"document", "free", "teacher_course", "evolution_plan"}
 
 
 def _strip_fences(text: str) -> str:
@@ -307,6 +360,9 @@ def _parse_meta_block(raw: str) -> tuple[str, dict]:
         elif key == "offers":
             meta["offer_refs"] = [r.strip() for r in value.split("|") if r.strip()]
 
+        elif key == "metiers":
+            meta["career_refs"] = [r.strip() for r in value.split("|") if r.strip()]
+
     return content, meta
 
 
@@ -347,6 +403,22 @@ class OfferCard(BaseModel):
     expires_at: str | None = None
 
 
+class CareerCard(BaseModel):
+    """Une fiche métier réelle affichée au client — jamais rédigée par le LLM.
+
+    Remplie directement depuis `CareerReference` (cf. `SpecializedAgent.process`) :
+    mêmes garde-fous anti-hallucination qu'OfferCard, appliqués au référentiel
+    métiers curaté (cf. career_reference_service.py).
+    """
+
+    career_ref: str
+    title: str
+    category: str | None = None
+    description: str | None = None
+    key_skills: list[str] = []
+    example_formations: list[dict] = []
+
+
 class AgentResponse(BaseModel):
     """Format unifié de toute réponse IA dans Malayka."""
 
@@ -356,6 +428,7 @@ class AgentResponse(BaseModel):
     suggestions: list[Suggestion] = []
     sources: list[Source] = []
     offers: list[OfferCard] = []
+    careers: list[CareerCard] = []
     deliverables: list[str] = []
     agent_id: str
 
@@ -413,7 +486,8 @@ class SpecializedAgent:
         response = self._parse(raw)
         response = self._inject_sources(response, ctx)
         _, meta = _parse_meta_block(raw)
-        return self._inject_offers(response, ctx, meta.get("offer_refs"))
+        response = self._inject_offers(response, ctx, meta.get("offer_refs"))
+        return self._inject_careers(response, ctx, meta.get("career_refs"))
 
     def _inject_offers(
         self, response: AgentResponse, ctx: AgentContext, selected_refs: list[str] | None,
@@ -445,6 +519,22 @@ class SpecializedAgent:
             response.offers = [OfferCard(**o) for o in offers]
         return response
 
+    def _inject_careers(
+        self, response: AgentResponse, ctx: AgentContext, selected_refs: list[str] | None,
+    ) -> AgentResponse:
+        """Attache les fiches métiers réelles à la réponse — mirroir exact de
+        _inject_offers, mêmes garde-fous anti-hallucination (cf. sa docstring)."""
+        careers = ctx.goal_context.get("relevant_careers") if ctx.goal_context else None
+        if not careers:
+            return response
+        if selected_refs:
+            careers = [c for c in careers if c.get("career_ref") in selected_refs]
+        else:
+            careers = []
+        if careers:
+            response.careers = [CareerCard(**c) for c in careers]
+        return response
+
     def _build_messages(self, ctx: AgentContext) -> list[dict]:
         """Construit la liste de messages pour le LLM.
 
@@ -457,12 +547,37 @@ class SpecializedAgent:
             {"role": "system", "content": _RESPONSE_FORMAT_INSTRUCTION},
         ]
 
+        if self.AGENT_ID not in _ACCOMPANIMENT_EXCLUDED_AGENT_IDS:
+            messages.append({"role": "system", "content": _ACCOMPANIMENT_METHOD})
+
         if ctx.profile:
-            profile_info = ", ".join(f"{k}: {v}" for k, v in ctx.profile.items() if v)
+            # self_description est un paragraphe libre — le sortir du résumé
+            # compact "clé: valeur" (qui deviendrait illisible avec un long
+            # texte au milieu) et lui donner son propre message, comme les
+            # blocs offres/métiers ci-dessous.
+            compact_profile = {k: v for k, v in ctx.profile.items() if k != "self_description"}
+
+            def _fmt_value(v):
+                # Une liste (ex. interests: ["informatique", "design"]) doit
+                # rester lisible pour le LLM — jamais le repr Python brut.
+                return ", ".join(str(x) for x in v) if isinstance(v, list) else v
+
+            profile_info = ", ".join(
+                f"{k}: {_fmt_value(v)}" for k, v in compact_profile.items() if v
+            )
             if profile_info:
                 messages.append({
                     "role": "system",
                     "content": f"Profil de l'utilisateur : {profile_info}",
+                })
+
+            if ctx.profile.get("self_description"):
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "Description que l'utilisateur a donnée de lui-même : "
+                        f"{ctx.profile['self_description']}"
+                    ),
                 })
 
         # Hint A5 : champs critiques manquants → l'agent les priorise
@@ -482,9 +597,10 @@ class SpecializedAgent:
             })
 
         # goal_context : exclure les clés traitées séparément pour éviter les doublons.
-        # - relevant_offers : formatées dans un bloc dédié ci-dessous (offres réelles)
-        # - search_results  : désactivé, cf. note plus bas
-        _CTX_EXCLUDED = {"relevant_offers", "search_results"}
+        # - relevant_offers  : formatées dans un bloc dédié ci-dessous (offres réelles)
+        # - relevant_careers : formatées dans un bloc dédié ci-dessous (métiers réels)
+        # - search_results   : désactivé, cf. note plus bas
+        _CTX_EXCLUDED = {"relevant_offers", "relevant_careers", "search_results"}
         goal_ctx_clean = {
             k: v for k, v in ctx.goal_context.items()
             if k not in _CTX_EXCLUDED
@@ -519,6 +635,27 @@ class SpecializedAgent:
                     "Offres candidates (catégorie + pays uniquement, pertinence non "
                     "vérifiée) — choisis toi-même lesquelles montrer, cf. la clé "
                     "`offers` du @@META@@ :\n"
+                    + "\n".join(lines)
+                ),
+            })
+
+        # Fiches métiers candidates — même logique que les offres : titre/catégorie
+        # seulement, la description complète et les compétences/formations restent
+        # dans la carte affichée, remplie séparément dans process().
+        relevant_careers = ctx.goal_context.get("relevant_careers") if ctx.goal_context else None
+        if relevant_careers:
+            lines = []
+            for c in relevant_careers:
+                parts = [f"« {c.get('title')} »"]
+                if c.get("category"):
+                    parts.append(f"({c['category']})")
+                lines.append(f"- {' '.join(parts)} [réf. {c.get('career_ref')}]")
+            messages.append({
+                "role": "system",
+                "content": (
+                    "Métiers candidats (pays + mots-clés uniquement, pertinence non "
+                    "vérifiée) — choisis toi-même lesquels montrer, cf. la clé "
+                    "`metiers` du @@META@@ :\n"
                     + "\n".join(lines)
                 ),
             })

@@ -34,6 +34,7 @@ from app.models.chat import ChatMessage, ChatThread, MessageRole
 from app.repositories.chat_repo import AsyncChatRepository, ChatRepository
 from app.services.intent_extractor import IntentExtractorService
 from app.services.memory_service import AsyncMemoryService, MemoryService
+from app.services.career_reference_service import CareerReferenceService
 from app.services.scraped_offer_service import ScrapedOfferService
 
 
@@ -169,6 +170,9 @@ class ChatService:
         goal_context = self._enrich_with_offers(
             goal_context, goal_type, profile or {}, content, self.repo.db,
             offer_ref=offer_ref,
+        )
+        goal_context = self._enrich_with_careers(
+            goal_context, goal_type, profile or {}, content, self.repo.db,
         )
 
         ctx = AgentContext(
@@ -384,6 +388,37 @@ class ChatService:
             logger.debug("Offer enrichment skipped", exc_info=True)
         return goal_context
 
+    @staticmethod
+    def _enrich_with_careers(
+        goal_context: dict,
+        goal_type: str | None,
+        profile: dict,
+        content: str,
+        db: "Session",
+    ) -> dict:
+        """Enrichit goal_context avec des fiches métiers du référentiel curaté.
+
+        Chemin séparé de _enrich_with_offers (pas réutilisable tel quel : le
+        référentiel métiers n'est pas un ScrapedOfferType) — mais même liste
+        d'exclusion : les métiers candidats aident tout accompagnement vers un
+        objectif (stage, concours, bourse...), pas seulement l'orientation
+        explicite. Sert de base au raisonnement "compétences actuelles →
+        contexte → ce qu'il manque (formation) → offres" appliqué par tous les
+        agents spécialisés (cf. `base.py::_ACCOMPANIMENT_METHOD`).
+        """
+        if not goal_type or goal_type in (GoalType.DOCUMENT, GoalType.FREE):
+            return goal_context
+        try:
+            with db.begin_nested():
+                careers = CareerReferenceService(db).search_for_agent(
+                    profile=profile, message=content,
+                )
+            if careers:
+                return {**goal_context, "relevant_careers": careers}
+        except Exception:
+            logger.debug("Career enrichment skipped", exc_info=True)
+        return goal_context
+
     def _extract_last_agent_id(self, thread_id: uuid.UUID) -> str | None:
         """Extrait le dernier agent_id depuis le payload du dernier message assistant."""
         from sqlalchemy import select
@@ -498,6 +533,9 @@ class AsyncChatService:
         # → thread isolé avec session sync propre pour ne pas bloquer asyncio
         goal_context = await _enrich_with_offers_async(
             goal_context, goal_type, profile or {}, content, offer_ref=offer_ref,
+        )
+        goal_context = await _enrich_with_careers_async(
+            goal_context, goal_type, profile or {}, content,
         )
 
         ctx = AgentContext(
@@ -701,6 +739,34 @@ async def _enrich_with_offers_async(
             return {**goal_context, "relevant_offers": offers}
     except Exception:
         logger.debug("Async offer enrichment skipped", exc_info=True)
+    return goal_context
+
+
+async def _enrich_with_careers_async(
+    goal_context: dict,
+    goal_type: str | None,
+    profile: dict,
+    content: str,
+) -> dict:
+    """Enrichit goal_context avec des fiches métiers — mirroir de
+    _enrich_with_offers_async, cf. ChatService._enrich_with_careers pour le
+    pourquoi d'un chemin séparé (même liste d'exclusion que les offres, plus
+    la même raison de ratisser large : tout agent d'accompagnement, pas
+    seulement l'orientation)."""
+    if not goal_type or goal_type in ("document", "free"):
+        return goal_context
+
+    def _sync_search() -> list[dict]:
+        from app.core.database import SessionLocal
+        with SessionLocal() as sync_db:
+            return CareerReferenceService(sync_db).search_for_agent(profile=profile, message=content)
+
+    try:
+        careers = await asyncio.to_thread(_sync_search)
+        if careers:
+            return {**goal_context, "relevant_careers": careers}
+    except Exception:
+        logger.debug("Async career enrichment skipped", exc_info=True)
     return goal_context
 
 
