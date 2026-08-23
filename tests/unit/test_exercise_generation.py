@@ -4,8 +4,9 @@ Verrouille : parsing JSON strict (avec fences markdown tolérées), un seul retr
 JSON invalide puis échec propre, et le retrait (pas l'échec total) d'une question dont
 l'index de bonne réponse est hors bornes.
 
-Pas de pytest-asyncio dans cet environnement (cf. tests/unit/test_llm_agents.py) :
-on utilise asyncio.get_event_loop().run_until_complete() comme le reste de la suite.
+Tests synchrones pilotant du code async via asyncio.run(), comme le reste de la
+suite : chaque appel ouvre puis referme sa propre boucle, sans jamais dépendre
+d'une boucle globale partagée entre tests.
 """
 
 import asyncio
@@ -19,7 +20,7 @@ from app.services import exercise_generation
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 class _FakeLLM:

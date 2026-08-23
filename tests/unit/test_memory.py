@@ -142,7 +142,7 @@ class TestMaybeCompress:
 
             llm = AsyncMock()
             service = MemoryService(MagicMock())
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 service.maybe_compress(thread.id, llm)
             )
 
@@ -158,7 +158,7 @@ class TestMaybeCompress:
 
             llm = AsyncMock()
             service = MemoryService(MagicMock())
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 service.maybe_compress(thread.id, llm)
             )
 
@@ -191,7 +191,7 @@ class TestMaybeCompress:
             llm.complete.return_value = "L'utilisateur a posé 3 questions et reçu 3 réponses."
 
             service = MemoryService(MagicMock())
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 service.maybe_compress(thread.id, llm)
             )
 
@@ -227,7 +227,7 @@ class TestMaybeCompress:
             llm.complete.return_value = "Résumé mis à jour avec les nouvelles questions."
 
             service = MemoryService(MagicMock())
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 service.maybe_compress(thread.id, llm)
             )
 
@@ -247,7 +247,7 @@ class TestMaybeCompress:
 
             llm = AsyncMock()
             service = MemoryService(MagicMock())
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 service.maybe_compress(uuid.uuid4(), llm)
             )
 

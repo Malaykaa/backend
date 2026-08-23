@@ -22,9 +22,35 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
+  # Aucun test n'était exécuté avant un déploiement : chaque fusion sur main
+  # partait en production sans vérification automatique. Ce job s'exécute sur
+  # les push ET les pull requests, et conditionne la construction de l'image
+  # (cf. `needs: test` ci-dessous) — rien ne part si la suite est rouge.
+  #
+  # Périmètre volontairement limité à tests/unit : les tests d'intégration
+  # démarrent un Postgres via testcontainers, nettement plus lent. À ajouter
+  # dans un second temps, une fois cette barrière stabilisée.
+  test:
+    name: Tests unitaires
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"   # même version que le Dockerfile
+          cache: pip
+
+      - name: Installer les dépendances
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Exécuter la suite unitaire
+        run: python -m pytest tests/unit -q
+
   build:
     name: Build & push image
     runs-on: ubuntu-latest
+    needs: test
     if: github.event_name == 'push'
     permissions:
       contents: read

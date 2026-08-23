@@ -206,9 +206,11 @@ class TestExecutionEngine:
 
         events = await _collect_events(engine.execute(plan, _ctx("prépare le bac")))
 
-        assert len(events) == 1
-        assert events[0].type == EventType.done
-        assert events[0].agent_response.agent_id == "exam"
+        # stream_route émet un event de progression avant le résultat : on vérifie
+        # le contrat (le dernier event est le done attendu), pas un compte figé.
+        assert events[-1].type == EventType.done
+        assert events[-1].agent_response.agent_id == "exam"
+        assert all(e.type != EventType.done for e in events[:-1])
         agent.process.assert_called_once()
 
     @pytest.mark.asyncio
@@ -402,9 +404,11 @@ class TestOrchestratorStream:
             orch.stream_route(_ctx("aide-moi", goal_type="exam", goal_type_source="goal")),
         )
 
-        assert len(events) == 1
-        assert events[0].type == EventType.done
-        assert events[0].agent_response.agent_id == "exam"
+        # stream_route émet un event de progression avant le résultat : on vérifie
+        # le contrat (le dernier event est le done attendu), pas un compte figé.
+        assert events[-1].type == EventType.done
+        assert events[-1].agent_response.agent_id == "exam"
+        assert all(e.type != EventType.done for e in events[:-1])
 
     @pytest.mark.asyncio
     async def test_stream_route_low_confidence_clarification(self):
@@ -418,9 +422,9 @@ class TestOrchestratorStream:
             orch.stream_route(_ctx("xyzzy")),
         )
 
-        assert len(events) == 1
-        assert events[0].type == EventType.done
-        assert events[0].agent_response.agent_id == "clarification"
+        assert events[-1].type == EventType.done
+        assert events[-1].agent_response.agent_id == "clarification"
+        assert all(e.type != EventType.done for e in events[:-1])
 
 
 # ── ProgressEvent SSE ───────────────────────────────────
