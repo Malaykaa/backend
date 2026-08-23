@@ -43,15 +43,20 @@ _SOURCES_TAIL_RE = re.compile(
 # Format : (clé_profil, libellé_lisible_pour_le_LLM)
 
 _CRITICAL_FIELDS: dict[str, list[tuple[str, str]]] = {
+    # NB : la clé doit exister dans le dict renvoyé par core.deps.extract_profile,
+    # sinon le champ est signalé manquant à CHAQUE message, même renseigné.
+    # C'était le cas de "level", qui n'existe nulle part — le niveau d'études
+    # saisi à l'inscription est rangé dans current_status
+    # (cf. OnboardingPage.tsx : current_status = studyLevel || currentStatus).
     "scholarship": [
-        ("country",  "pays ou région cible"),
-        ("domain",   "domaine d'études ou secteur"),
-        ("level",    "niveau d'études visé (licence/master/doctorat)"),
+        ("country",        "pays ou région cible"),
+        ("domain",         "domaine d'études ou secteur"),
+        ("current_status", "niveau d'études actuel ou visé (licence/master/doctorat)"),
     ],
     "study_grant": [
-        ("country",  "pays de destination souhaité"),
-        ("domain",   "domaine ou filière d'études"),
-        ("level",    "niveau d'études visé"),
+        ("country",        "pays de destination souhaité"),
+        ("domain",         "domaine ou filière d'études"),
+        ("current_status", "niveau d'études actuel ou visé"),
     ],
     "funding": [
         ("country",  "pays ou région d'opération du projet"),

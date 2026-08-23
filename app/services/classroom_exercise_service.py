@@ -12,7 +12,10 @@ appel LLM à la soumission — décision produit verrouillée pour la V1 (QCM un
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 import uuid
+from collections import Counter
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -437,6 +440,26 @@ _MIN_WRONG_RATE = 0.5
 _MIN_QUESTIONS_SEEN = 2
 
 
+def _normalize_topic(tag: str) -> str:
+    """Clé de regroupement des notions, insensible à la casse, aux accents et à
+    la ponctuation.
+
+    topic_tag est un texte libre produit par le LLM à chaque génération
+    d'exercice, sans vocabulaire imposé : « Dérivées composées », « dérivées
+    composées » et « Derivees composees » désignent la même notion mais
+    formaient trois entrées distinctes dans le rapport. La cohérence tenait au
+    sein d'un même exercice, et se délitait dès qu'on en comparait plusieurs —
+    c'est-à-dire précisément ce que ce rapport calcule.
+
+    Le libellé d'origine reste affiché (cf. topic_labels) : on ne normalise que
+    la clé de regroupement, jamais ce que voit l'enseignant.
+    """
+    folded = unicodedata.normalize("NFKD", tag)
+    folded = "".join(c for c in folded if not unicodedata.combining(c))
+    folded = re.sub(r"[^\w\s]", " ", folded.lower())
+    return re.sub(r"\s+", " ", folded).strip()
+
+
 def get_classroom_difficulty_report(db: Session, *, classroom_id: uuid.UUID) -> dict:
     rows = db.execute(
         select(
@@ -459,10 +482,19 @@ def get_classroom_difficulty_report(db: Session, *, classroom_id: uuid.UUID) -> 
 
     by_student: dict[uuid.UUID, dict[str, list[bool]]] = {}
     by_topic: dict[str, list[bool]] = {}
+    # Clé normalisée → libellés d'origine rencontrés, pour réafficher à
+    # l'enseignant l'orthographe la plus fréquente plutôt que la forme normalisée.
+    topic_labels: dict[str, Counter] = {}
     for user_id, topic_tag, is_correct in rows:
-        topic = topic_tag or "Non catégorisé"
+        raw = (topic_tag or "").strip() or "Non catégorisé"
+        topic = _normalize_topic(raw) or "non categorise"
+        topic_labels.setdefault(topic, Counter())[raw] += 1
         by_student.setdefault(user_id, {}).setdefault(topic, []).append(is_correct)
         by_topic.setdefault(topic, []).append(is_correct)
+
+    def _label(key: str) -> str:
+        counter = topic_labels.get(key)
+        return counter.most_common(1)[0][0] if counter else key
 
     # Score moyen et tendance par étudiant, à partir des soumissions (pas des réponses brutes).
     student_submissions: dict[uuid.UUID, list[ClassroomExerciseSubmission]] = {}
@@ -486,7 +518,8 @@ def get_classroom_difficulty_report(db: Session, *, classroom_id: uuid.UUID) -> 
             wrong_rate = 1 - (sum(results) / len(results))
             if wrong_rate >= _MIN_WRONG_RATE and len(results) >= _MIN_QUESTIONS_SEEN:
                 flagged.append({
-                    "topic_tag": topic, "wrong_rate": round(wrong_rate, 2), "questions_seen": len(results),
+                    "topic_tag": _label(topic), "wrong_rate": round(wrong_rate, 2),
+                    "questions_seen": len(results),
                 })
 
         submissions = sorted(student_submissions.get(user_id, []), key=lambda s: s.attempt_number)
@@ -510,10 +543,10 @@ def get_classroom_difficulty_report(db: Session, *, classroom_id: uuid.UUID) -> 
 
     topics_report = [
         {
-            "topic_tag": topic,
+            "topic_tag": _label(topic),
             "class_success_rate": round(sum(results) / len(results) * 100),
             "students_flagged_count": sum(
-                1 for s in students if any(f["topic_tag"] == topic for f in s["flagged_topics"])
+                1 for s in students if any(f["topic_tag"] == _label(topic) for f in s["flagged_topics"])
             ),
         }
         for topic, results in by_topic.items()

@@ -15,7 +15,8 @@ from app.core.deps import extract_profile
 def _user_with_profile(**overrides):
     defaults = dict(
         first_name="Awa", last_name="Koné", gender="F", birth_year=2000,
-        country="CI", primary_role="student", domain=None, field_of_study="Info",
+        country="CI", city="Bouaké", nationality="Ivoirienne",
+        primary_role="student", domain=None, field_of_study="Info",
         current_status=None, preferred_content=None, skills=[],
         interests=["informatique", "design"], self_description="Je cherche un stage.",
     )
@@ -32,6 +33,14 @@ class TestExtractProfile:
     def test_self_description_est_inclus(self):
         result = extract_profile(_user_with_profile())
         assert result["self_description"] == "Je cherche un stage."
+
+    def test_ville_et_nationalite_sont_incluses(self):
+        """Collectées à l'inscription, elles n'atteignaient aucun agent : la ville
+        affine la pertinence géographique, la nationalité conditionne
+        l'éligibilité à la plupart des bourses."""
+        result = extract_profile(_user_with_profile())
+        assert result["city"] == "Bouaké"
+        assert result["nationality"] == "Ivoirienne"
 
     def test_profil_absent_retourne_dict_vide(self):
         user = SimpleNamespace(profile=None)
