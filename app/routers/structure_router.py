@@ -27,6 +27,7 @@ from app.models.structure import (
     ClassroomExerciseKind,
     ClassroomExerciseRecipient,
     ClassroomMembership,
+    ExerciseSubmissionStatus,
     InvitationStatus,
     Structure,
     StructureInvitation,
@@ -1071,6 +1072,14 @@ def start_exercise_submission(
 
 
 def _exercise_result_response(exercise, submission, answers) -> ExerciseResultResponse:
+    # Second verrou. Cette réponse porte correct_choice_index et explanation :
+    # elle ne doit JAMAIS être construite pour une tentative non soumise. Le
+    # filtre principal est dans classroom_exercise_service.get_my_result ;
+    # celui-ci garantit qu'un futur appelant ne puisse pas le contourner par
+    # inadvertance en passant directement une tentative en cours.
+    if submission.status != ExerciseSubmissionStatus.submitted:
+        raise NotFoundError("Résultat")
+
     questions_by_id = {q.id: q for q in exercise.questions}
     return ExerciseResultResponse(
         exercise_id=str(exercise.id), attempt_number=submission.attempt_number,

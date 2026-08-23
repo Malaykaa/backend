@@ -355,8 +355,15 @@ def get_my_result(
     exercise = get_exercise(db, exercise_id)
     recipient = _get_exercise_recipient(db, exercise_id, user_id)
 
+    # Ne remonter QUE des tentatives déjà soumises. Sans ce filtre, la tentative
+    # créée par start_submission (statut in_progress, réponses pré-créées) était
+    # retournée telle quelle — et la réponse du routeur porte correct_choice_index
+    # et explanation pour chaque question. Un élève pouvait donc enchaîner
+    # start → my-result → submit et obtenir le corrigé avant de répondre, ce qui
+    # vidait de son sens une évaluation notée à tentative unique.
     stmt = select(ClassroomExerciseSubmission).where(
-        ClassroomExerciseSubmission.recipient_id == recipient.id
+        ClassroomExerciseSubmission.recipient_id == recipient.id,
+        ClassroomExerciseSubmission.status == ExerciseSubmissionStatus.submitted,
     )
     if attempt_number is not None:
         stmt = stmt.where(ClassroomExerciseSubmission.attempt_number == attempt_number)
