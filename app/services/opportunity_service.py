@@ -1,5 +1,25 @@
 """OpportunityService — matching profil + intention extraite → opportunités.
 
+OBSOLETE — remplace par ScrapedOffer / recommendations_router.
+
+Deux systemes d'opportunites coexistent dans l'application :
+
+- Opportunity / UserOpportunity (ce module) : generation historique, scoring
+  par regles fixes (domaine + pays + statut, puis bonus d'intention).
+- ScrapedOffer (app/models/scraped_offer.py) : le systeme actuel — collecte
+  automatique, recherche semantique pgvector, rescoring LLM, retours
+  utilisateur. C'est LUI qui alimente le fil "Pour toi" et les alertes.
+
+En cas de doute sur la table faisant autorite pour les opportunites, c'est
+ScrapedOffer. Ne pas ajouter de fonctionnalite ici.
+
+Conserve et non supprime : verifie, le frontend n'appelle jamais /opportunities
+(seule occurrence du mot : une categorie de scraping sans rapport). Mais des
+donnees peuvent subsister en base et un eventuel client externe n'est pas
+verifiable depuis le code. La suppression se fera a froid, une fois cette
+derniere incertitude levee.
+
+
 Scoring en deux couches :
 1. Score profil (domaine + pays + statut) — max 100 pts
 2. Bonus intention extraite (type + domain + keywords + location) — max 60 pts
