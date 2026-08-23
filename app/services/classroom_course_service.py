@@ -12,7 +12,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.agents.base import AgentContext, AgentResponse
@@ -476,15 +476,70 @@ def _build_progress_summary(
     return "\n".join(lines)
 
 
+# Namespace du verrou consultatif de génération de plans (cf. le motif de
+# app/services/scraping/scheduler.py). Verrou de SESSION — relâché à la
+# déconnexion, pas au commit — parce que cette génération committe en cours de
+# route. La clé secondaire dérive de l'identifiant de salle : deux salles
+# différentes peuvent générer en parallèle, la même salle non.
+_EVOLUTION_PLANS_LOCK_NS = 7_002_001
+
+
+def _classroom_lock_key(classroom_id: uuid.UUID) -> int:
+    """Entier signé 32 bits stable dérivé de l'UUID (contrainte de
+    pg_try_advisory_lock(int4, int4))."""
+    return (classroom_id.int & 0x7FFFFFFF) - 0x40000000
+
+
 async def generate_evolution_plans(
     db: Session, *, classroom_id: uuid.UUID, created_by_user_id: uuid.UUID,
 ) -> list[ClassroomCourse]:
-    """Génère, en une action, un plan d'évolution personnalisé par étudiant × matière —
-    basé sur la progression réelle de chaque étudiant dans les cours déjà envoyés.
+    """Génère un plan d'évolution personnalisé par étudiant × matière, à partir
+    de la progression réelle de chaque étudiant dans les cours déjà envoyés.
+    Auto-envoyé immédiatement — "en une action" inclut la livraison.
 
-    Auto-envoyé immédiatement (pas d'étape de revue séparée) : "en une action" inclut
-    la livraison, pas seulement la génération.
+    Trois garde-fous, parce que cette fonction enchaîne un appel LLM complet par
+    étudiant ET par matière, séquentiellement, dans une seule requête HTTP :
+
+    1. **Verrou par salle** — un double clic de l'enseignant relançait toute la
+       génération, et donc toute la facture LLM. Les appels concurrents sur la
+       même salle renvoient désormais [] immédiatement.
+
+    2. **Commit par plan** — un échec appelait db.rollback(), ce qui annulait
+       AUSSI tous les plans précédents du lot (ils n'étaient que flush()és, le
+       commit n'ayant lieu qu'à la toute fin côté routeur). La boucle continuait
+       pourtant, et le compteur renvoyé annonçait des plans qui n'existaient
+       plus. Chaque plan est maintenant validé indépendamment.
+
+    3. **Reprise idempotente** — les couples (étudiant, matière) déjà pourvus
+       d'un plan sont ignorés. Combiné au point 2, cela rend le dépassement de
+       délai HTTP (nginx coupe à 120 s, largement atteignable sur une classe
+       entière) inoffensif : relancer reprend là où la génération s'est
+       arrêtée, sans rien regénérer ni refacturer.
+
+    Reste à faire, hors de cette correction : basculer en tâche de fond avec
+    suivi de progression, pour que l'enseignant n'ait plus à relancer du tout.
     """
+    lock_args = {"ns": _EVOLUTION_PLANS_LOCK_NS, "k": _classroom_lock_key(classroom_id)}
+    if not db.execute(text("SELECT pg_try_advisory_lock(:ns, :k)"), lock_args).scalar():
+        logger.info("[Plans IA] génération déjà en cours pour classroom=%s — ignorée", classroom_id)
+        return []
+
+    try:
+        return await _generate_evolution_plans_locked(
+            db, classroom_id=classroom_id, created_by_user_id=created_by_user_id,
+        )
+    finally:
+        # Obligatoire : un verrou de session n'est PAS relâché quand la connexion
+        # retourne au pool. Sans cette libération, la première génération
+        # bloquerait définitivement toutes les suivantes sur cette salle.
+        db.execute(text("SELECT pg_advisory_unlock(:ns, :k)"), lock_args)
+        db.commit()
+
+
+async def _generate_evolution_plans_locked(
+    db: Session, *, classroom_id: uuid.UUID, created_by_user_id: uuid.UUID,
+) -> list[ClassroomCourse]:
+    """Corps de la génération — appelé uniquement avec le verrou de salle tenu."""
     subjects = set(
         db.execute(
             select(ClassroomCourse.subject).where(
@@ -516,6 +571,19 @@ async def generate_evolution_plans(
         )
     ) if course_ids_for_plans else []
 
+    # Couples (étudiant, matière) déjà pourvus d'un plan : ignorés, pour qu'une
+    # relance après dépassement de délai reprenne sans regénérer ni refacturer.
+    deja_pourvus: set[tuple[uuid.UUID, str | None]] = set(
+        db.execute(
+            select(ClassroomCourseRecipient.user_id, ClassroomCourse.subject)
+            .join(ClassroomCourse, ClassroomCourseRecipient.course_id == ClassroomCourse.id)
+            .where(
+                ClassroomCourse.classroom_id == classroom_id,
+                ClassroomCourse.kind == ClassroomCourseKind.evolution_plan,
+            )
+        ).all()
+    )
+
     llm = get_llm_provider()
     agent = EvolutionPlanAgent(llm)
     generated: list[ClassroomCourse] = []
@@ -527,6 +595,10 @@ async def generate_evolution_plans(
 
     for user_id in recipient_user_ids:
         for subject in subjects:
+            if (user_id, subject) in deja_pourvus:
+                logger.info("[Plans IA] skip user=%s subject=%r — plan déjà généré", user_id, subject)
+                continue
+
             summary = _build_progress_summary(db, classroom_id=classroom_id, user_id=user_id, subject=subject)
             logger.info("[Plans IA] user=%s subject=%r summary_len=%d has_progress=%s",
                 user_id, subject, len(summary),
@@ -567,12 +639,16 @@ async def generate_evolution_plans(
                 db.flush()
 
                 _materialize_recipient(db, plan, user_id)
+                # Validation immédiate : sans elle, un échec ultérieur annulait
+                # par rollback tous les plans déjà produits dans ce lot.
+                db.commit()
                 generated.append(plan)
                 logger.info("[Plans IA] plan created + sent to user=%s", user_id)
             except Exception as exc:
                 logger.error(
                     "[Plans IA] plan creation FAILED user=%s subject=%r: %s", user_id, subject, exc, exc_info=True,
                 )
+                # Ne défait que le plan en cours — les précédents sont committés.
                 db.rollback()
                 continue
 
