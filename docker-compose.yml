@@ -46,6 +46,20 @@ services:
     # --forwarded-allow-ips='*' ajouté au Dockerfile : tant que le port était
     # public, quiconque le contactait directement pouvait usurper n'importe
     # quelle IP via un en-tête X-Forwarded-For forgé.
+
+    # Les pièces jointes (CV, documents de cours déposés par les enseignants)
+    # étaient écrites dans le système de fichiers du conteneur, sans volume.
+    # Or le déploiement recrée le conteneur à chaque fois : tous les fichiers
+    # envoyés étaient donc détruits à chaque mise en production, alors que
+    # leurs lignes en base subsistaient — l'utilisateur voyait un document
+    # listé mais introuvable au téléchargement.
+    #
+    # WORKDIR vaut /app (cf. Dockerfile) et ATTACHMENTS_DIR vaut
+    # "storage/attachments" par défaut, chemin relatif : les fichiers
+    # atterrissent donc dans /app/storage/attachments. On monte le parent pour
+    # couvrir aussi un éventuel sous-répertoire ajouté plus tard.
+    volumes:
+      - attachments_data:/app/storage
     depends_on:
       db:
         condition: service_healthy
@@ -57,6 +71,7 @@ services:
 
 volumes:
   pg_data:
+  attachments_data:
 
 networks:
   malaykaa_net:
