@@ -6,6 +6,18 @@ on:
   pull_request:
     branches: [main]
 
+# Un seul run à la fois par branche. Deux fusions rapprochées sur main lançaient
+# deux déploiements simultanés sur le même serveur, donc deux `alembic upgrade
+# head` en parallèle sur la même base : c'est ce qui a fait échouer le run #85
+# (collision sur la création du type classroom_exercise_kind_enum) alors que le
+# schéma était bien appliqué par l'autre run.
+#
+# cancel-in-progress: false est délibéré — on veut que le second déploiement
+# ATTENDE la fin du premier, jamais qu'il l'interrompe en pleine migration.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   REGISTRY: ghcr.io
 
