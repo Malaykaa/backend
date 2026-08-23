@@ -158,3 +158,27 @@ jobs:
             # cette ligne identifie le responsable sans rien arrêter de force.
             echo "--- État des conteneurs après déploiement ---"
             docker compose ps
+
+            # Pré-vérification du passage en ENVIRONMENT=prod, à froid.
+            #
+            # validate_security_settings() REFUSE le démarrage en staging/prod si
+            # le secret JWT est resté par défaut, si aucun fournisseur WhatsApp
+            # n'est configuré, si OTP_MOCK_ACCEPT_ANY est actif, ou si
+            # FRONTEND_URL pointe encore sur localhost. Aujourd'hui la production
+            # tourne avec ENVIRONMENT=local : ces contrôles ne s'appliquent donc
+            # jamais, et basculer à l'aveugle risquerait une panne totale.
+            #
+            # Ce test s'exécute dans un conteneur JETABLE (--rm) : il ne touche
+            # pas au conteneur qui sert les utilisateurs. Il n'importe QUE
+            # app.core.config — surtout pas app.main, dont l'import instancie
+            # otp_service et échouerait tant que Redis n'est pas joignable.
+            #
+            # Volontairement non bloquant (`|| true`) : c'est un diagnostic, il
+            # ne doit jamais faire échouer un déploiement par ailleurs sain.
+            echo "--- Pré-vérification ENVIRONMENT=prod (diagnostic, sans effet) ---"
+            if docker compose run --rm --no-deps -e ENVIRONMENT=prod backend \
+                 python -c "from app.core.config import validate_security_settings; validate_security_settings(); print('AUCUN BLOCAGE')"; then
+              echo ">>> La bascule en ENVIRONMENT=prod est sûre."
+            else
+              echo ">>> BLOCAGE : corriger le .env du serveur AVANT de basculer (détail ci-dessus)."
+            fi

@@ -37,6 +37,24 @@ services:
   backend:
     image: ${BACKEND_IMAGE:-malaykaa-backend}:${IMAGE_TAG:-latest}
     env_file: .env
+
+    # Redis est joint par son nom de service sur malaykaa_net. Cette valeur est
+    # fixée ici, et non déléguée au .env, parce qu'elle dépend de la topologie
+    # décrite dans CE fichier : le conteneur redis n'expose aucun port sur
+    # l'hôte, "localhost" ne peut donc jamais l'atteindre depuis le backend.
+    # Un `environment:` prend le pas sur `env_file:`, ce qui neutralise une
+    # valeur devenue incorrecte côté serveur.
+    #
+    # Symptôme corrigé : /health/ready renvoyait "redis":"error" en production.
+    # Conséquences silencieuses — la déconnexion ne révoquait plus rien
+    # (token_blacklist.revoke sort sans agir si Redis est absent, et
+    # BLACKLIST_FAIL_CLOSED vaut false par défaut), et les codes OTP
+    # d'inscription retombaient sur un stockage en mémoire du processus.
+    #
+    # À adapter si Redis devient un service managé externe.
+    environment:
+      REDIS_URL: redis://redis:6379/0
+
     # Pas de publication de port sur l'hôte : nginx ("frontend", cf. son
     # docker-compose.yml) atteint ce service via malaykaa_net par résolution
     # DNS interne (proxy_pass http://backend:8000) — backend-staging fait
