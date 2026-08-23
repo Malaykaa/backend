@@ -5,9 +5,10 @@ from __future__ import annotations
 import io
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from sqlalchemy.orm import Session
 
@@ -23,6 +24,28 @@ from app.models.document import Document, DocumentType
 from app.repositories.document_repo import DocumentRepository
 
 ATTACHMENTS_DIR = Path(os.getenv("ATTACHMENTS_DIR", "storage/attachments"))
+
+# Longueur max du nom conserve dans la cle de stockage. Le prefixe UUID garantit
+# deja l'unicite ; ce qui suit n'est la que pour rester lisible a l'oeil.
+_MAX_STORED_NAME = 80
+
+
+def _safe_storage_name(filename: str) -> str:
+    """Rend un nom fourni par le client utilisable comme composant de chemin.
+
+    Le nom etait auparavant concatene tel quel dans un chemin disque. Sur Linux
+    la traversee etait bloquee par accident — le prefixe UUID empeche le premier
+    segment d'etre ".." et le noyau exige que chaque repertoire intermediaire
+    existe — mais sur un poste Windows, ou les ".." sont resolus lexicalement, un
+    nom comme "x/../../evil.txt" ecrivait bel et bien hors du dossier. La
+    protection etait donc accidentelle, pas voulue : elle serait tombee au
+    moindre changement de format de cle. On ne conserve ici que le nom de base,
+    sans separateur ni caractere de controle.
+    """
+    base = PurePath(filename.replace("\\", "/")).name
+    base = base.replace("\x00", "")
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", base).lstrip(".")
+    return cleaned[:_MAX_STORED_NAME] or "upload"
 _MAX_EXTRACTED_CHARS = 12_000  # ~3 000 tokens — limite raisonnable pour injection LLM
 
 
@@ -108,7 +131,7 @@ class DocumentService:
     ) -> Attachment:
         """Sauvegarde un fichier sur disque et crée un Attachment lié à un message."""
         ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
-        storage_key = f"{uuid.uuid4().hex}_{filename}"
+        storage_key = f"{uuid.uuid4().hex}_{_safe_storage_name(filename)}"
         file_path = ATTACHMENTS_DIR / storage_key
         file_path.write_bytes(data)
 
@@ -137,7 +160,7 @@ class DocumentService:
     ) -> Attachment:
         """Upload "pending" — crée un Attachment sans message_id (lié plus tard au message)."""
         ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
-        storage_key = f"{uuid.uuid4().hex}_{filename}"
+        storage_key = f"{uuid.uuid4().hex}_{_safe_storage_name(filename)}"
         file_path = ATTACHMENTS_DIR / storage_key
         file_path.write_bytes(data)
 
