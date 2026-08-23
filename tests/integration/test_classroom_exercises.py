@@ -264,6 +264,77 @@ class TestIntegriteDuCorrige:
         assert submission.score_pct == 100
 
 
+class TestNormalisationDesNotions:
+    """topic_tag est un texte libre régénéré par le LLM à chaque exercice.
+
+    Sans normalisation, « Dérivées composées » et « derivees composees »
+    formaient deux notions distinctes : le regroupement tenait au sein d'un même
+    exercice et se délitait dès qu'on en comparait plusieurs — soit précisément
+    ce que le rapport de difficulté calcule.
+    """
+
+    def test_orthographes_equivalentes_sont_regroupees(self, db_session, classroom, enroll, make_user):
+        user_id, _ = make_user()
+        enroll(user_id)
+
+        # Deux exercices sur la même notion, orthographiée différemment.
+        for tag in ("Dérivées composées", "derivees  composees"):
+            exercise = _make_exercise(db_session, classroom, n_questions=2)
+            for q in exercise.questions:
+                q.topic_tag = tag
+            db_session.commit()
+            classroom_exercise_service.send_exercise(
+                db_session, exercise_id=exercise.id, target="student", student_user_id=user_id,
+            )
+            db_session.commit()
+            classroom_exercise_service.start_submission(
+                db_session, exercise_id=exercise.id, user_id=user_id,
+            )
+            db_session.commit()
+            # Tout faux → la notion est flaguée.
+            classroom_exercise_service.submit_exercise(
+                db_session, exercise_id=exercise.id, user_id=user_id,
+                answers=[(q.id, (q.correct_choice_index + 1) % 3) for q in exercise.questions],
+            )
+            db_session.commit()
+
+        report = classroom_exercise_service.get_classroom_difficulty_report(
+            db_session, classroom_id=classroom.id,
+        )
+        assert len(report["topics"]) == 1, report["topics"]
+        # Le libellé affiché reste une orthographe réelle, jamais la forme normalisée.
+        assert report["topics"][0]["topic_tag"] in ("Dérivées composées", "derivees  composees")
+
+    def test_notions_distinctes_restent_separees(self, db_session, classroom, enroll, make_user):
+        """Contre-épreuve : la normalisation ne doit pas fusionner à tort."""
+        user_id, _ = make_user()
+        enroll(user_id)
+
+        for tag in ("Dérivées composées", "Limites de suites"):
+            exercise = _make_exercise(db_session, classroom, n_questions=2)
+            for q in exercise.questions:
+                q.topic_tag = tag
+            db_session.commit()
+            classroom_exercise_service.send_exercise(
+                db_session, exercise_id=exercise.id, target="student", student_user_id=user_id,
+            )
+            db_session.commit()
+            classroom_exercise_service.start_submission(
+                db_session, exercise_id=exercise.id, user_id=user_id,
+            )
+            db_session.commit()
+            classroom_exercise_service.submit_exercise(
+                db_session, exercise_id=exercise.id, user_id=user_id,
+                answers=[(q.id, (q.correct_choice_index + 1) % 3) for q in exercise.questions],
+            )
+            db_session.commit()
+
+        report = classroom_exercise_service.get_classroom_difficulty_report(
+            db_session, classroom_id=classroom.id,
+        )
+        assert len(report["topics"]) == 2
+
+
 class TestDetectionDifficulte:
     def test_classe_sans_soumission_retourne_insufficient_data(self, db_session, classroom):
         report = classroom_exercise_service.get_classroom_difficulty_report(db_session, classroom_id=classroom.id)

@@ -38,6 +38,8 @@ def _make_user():
     profile.gender = "F"
     profile.birth_year = 2000
     profile.country = "Sénégal"
+    profile.city = "Dakar"
+    profile.nationality = "Sénégalaise"
     profile.primary_role = "student"
     profile.domain = "Sciences"
     profile.field_of_study = None
@@ -129,6 +131,8 @@ class TestExtractProfile:
             "gender": "F",
             "birth_year": 2000,
             "country": "Sénégal",
+            "city": "Dakar",
+            "nationality": "Sénégalaise",
             "primary_role": "student",
             "domain": "Sciences",
             "field_of_study": None,

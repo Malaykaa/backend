@@ -60,6 +60,13 @@ def extract_profile(user) -> dict:
         "gender":            user.profile.gender,
         "birth_year":        user.profile.birth_year,
         "country":           user.profile.country,
+        # Ville et nationalité étaient collectées à l'inscription mais transmises
+        # à aucun agent. La ville affine la pertinence géographique (un
+        # utilisateur de Bouaké était traité comme « quelque part en Côte
+        # d'Ivoire ») ; la nationalité conditionne l'éligibilité à la plupart des
+        # bourses, que l'agent Bourse ne pouvait donc pas prendre en compte.
+        "city":              user.profile.city,
+        "nationality":       user.profile.nationality,
         "primary_role":      user.profile.primary_role,
         "domain":            user.profile.domain,
         "field_of_study":    user.profile.field_of_study,
