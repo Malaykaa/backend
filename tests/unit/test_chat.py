@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from app.models.user import UserRole
 from app.agents.base import AgentContext, AgentResponse
 from app.agents.exam_agent import ExamAgent
 from app.agents.orchestrator import Orchestrator
@@ -27,9 +28,9 @@ def _make_user():
     user = MagicMock()
     user.id = uuid.uuid4()
     user.email = "chat@test.com"
-    user.role = "b2c"
+    user.role = UserRole.b2c
     user.is_active = True
-    user.created_at = "2026-01-01T00:00:00+00:00"
+    user.created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
     profile = MagicMock()
     profile.first_name = "Alice"
@@ -67,7 +68,7 @@ class TestExamAgent:
         llm = MockProvider()
         agent = ExamAgent(llm)
         ctx = _ctx("je prépare le bac")
-        response = asyncio.get_event_loop().run_until_complete(agent.process(ctx))
+        response = asyncio.run(agent.process(ctx))
 
         assert isinstance(response, AgentResponse)
         assert response.agent_id == "exam"
@@ -82,7 +83,7 @@ class TestExamAgent:
             message="je prépare le bac",
             profile={"first_name": "Alice", "domain": "Sciences"},
         )
-        response = asyncio.get_event_loop().run_until_complete(agent.process(ctx))
+        response = asyncio.run(agent.process(ctx))
 
         assert isinstance(response, AgentResponse)
         assert response.agent_id == "exam"
@@ -99,7 +100,7 @@ class TestExamAgent:
                 {"role": "assistant", "content": "Quelles matières te posent problème ?"},
             ],
         )
-        response = asyncio.get_event_loop().run_until_complete(agent.process(ctx))
+        response = asyncio.run(agent.process(ctx))
 
         assert isinstance(response, AgentResponse)
         assert response.agent_id == "exam"
@@ -154,7 +155,7 @@ class TestOrchestratorWithExam:
         llm = MockProvider()
         orch = Orchestrator(llm)
         ctx = _ctx("je prépare le bac")
-        response = asyncio.get_event_loop().run_until_complete(orch.route(ctx))
+        response = asyncio.run(orch.route(ctx))
 
         assert isinstance(response, AgentResponse)
         assert response.agent_id == "exam"
@@ -164,7 +165,7 @@ class TestOrchestratorWithExam:
         llm = MockProvider()
         orch = Orchestrator(llm)
         ctx = _ctx("aide moi", goal_type="exam")
-        response = asyncio.get_event_loop().run_until_complete(orch.route(ctx))
+        response = asyncio.run(orch.route(ctx))
 
         assert isinstance(response, AgentResponse)
         assert response.agent_id == "exam"
@@ -182,6 +183,10 @@ def client():
 def auth_user():
     user = _make_user()
     app.dependency_overrides[get_current_user] = lambda: user
+    # get_db doit aussi être surchargé : la dépendance ouvre une connexion réelle
+    # AVANT l'exécution de la route. Les tests qui posent leur propre mock_db le
+    # réécrivent ensuite ; ce défaut évite seulement la connexion Postgres.
+    app.dependency_overrides[get_db] = lambda: MagicMock()
     yield user
     app.dependency_overrides.clear()
 

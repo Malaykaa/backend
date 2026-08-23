@@ -29,7 +29,7 @@ def _ctx(message: str, goal_type: str | None = None) -> AgentContext:
 class TestMockProvider:
     def test_complete_returns_json(self):
         provider = MockProvider()
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             provider.complete([{"role": "user", "content": "je prépare le bac"}])
         )
         data = json.loads(result)
@@ -40,7 +40,7 @@ class TestMockProvider:
 
     def test_complete_free_message(self):
         provider = MockProvider()
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             provider.complete([{"role": "user", "content": "bonjour"}])
         )
         data = json.loads(result)
@@ -48,7 +48,7 @@ class TestMockProvider:
 
     def test_complete_scholarship(self):
         provider = MockProvider()
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             provider.complete([{"role": "user", "content": "je cherche une bourse"}])
         )
         data = json.loads(result)
@@ -56,7 +56,7 @@ class TestMockProvider:
 
     def test_complete_funding(self):
         provider = MockProvider()
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             provider.complete([{"role": "user", "content": "je cherche un financement"}])
         )
         data = json.loads(result)
@@ -64,7 +64,7 @@ class TestMockProvider:
 
     def test_complete_document(self):
         provider = MockProvider()
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             provider.complete([{"role": "user", "content": "génère mon cv"}])
         )
         data = json.loads(result)
@@ -79,7 +79,7 @@ class TestMockProvider:
                 chunks.append(chunk)
             return chunks
 
-        chunks = asyncio.get_event_loop().run_until_complete(_run())
+        chunks = asyncio.run(_run())
         assert len(chunks) >= 1
         # Reconstituer et vérifier que c'est du JSON valide
         full = "".join(chunks)
@@ -92,7 +92,7 @@ class TestMockProvider:
 class TestTriage:
     def test_exam(self):
         triage = Triage(MockProvider())
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             triage.analyze("je prépare le bac")
         )
         assert result.intent == "exam"
@@ -100,35 +100,35 @@ class TestTriage:
 
     def test_scholarship(self):
         triage = Triage(MockProvider())
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             triage.analyze("comment trouver une bourse ?")
         )
         assert result.intent == "scholarship"
 
     def test_career(self):
         triage = Triage(MockProvider())
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             triage.analyze("je veux changer de carrière")
         )
         assert result.intent == "career"
 
     def test_document(self):
         triage = Triage(MockProvider())
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             triage.analyze("génère mon cv")
         )
         assert result.intent == "document"
 
     def test_funding(self):
         triage = Triage(MockProvider())
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             triage.analyze("je cherche un financement pour mon projet")
         )
         assert result.intent == "funding"
 
     def test_tender(self):
         triage = Triage(MockProvider())
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             triage.analyze("il y a un appel d'offre intéressant")
         )
         assert result.intent == "tender"
@@ -136,7 +136,7 @@ class TestTriage:
     def test_ambiguous_returns_free(self):
         """Message sans mots-clés clairs → free avec confiance haute (mock)."""
         triage = Triage(MockProvider())
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             triage.analyze("aide-moi s'il te plaît")
         )
         assert result.intent == "free"
@@ -144,7 +144,7 @@ class TestTriage:
     def test_mode_direct_by_default(self):
         """La majorité des messages → mode direct."""
         triage = Triage(MockProvider())
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             triage.analyze("je prépare le bac")
         )
         assert result.mode == "direct"
@@ -152,7 +152,7 @@ class TestTriage:
     def test_workflow_signal(self):
         """Demande complexe → mode workflow."""
         triage = Triage(MockProvider())
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             triage.analyze("Aide-moi de A à Z pour la bourse Eiffel")
         )
         assert result.mode == "workflow"
@@ -166,7 +166,7 @@ class TestOrchestrator:
         llm = MockProvider()
         orch = Orchestrator(llm)
         ctx = _ctx("je prépare le bac")
-        response = asyncio.get_event_loop().run_until_complete(orch.route(ctx))
+        response = asyncio.run(orch.route(ctx))
 
         assert isinstance(response, AgentResponse)
         assert response.agent_id == "exam"
@@ -177,7 +177,7 @@ class TestOrchestrator:
         llm = MockProvider()
         orch = Orchestrator(llm)
         ctx = _ctx("je cherche une bourse")
-        response = asyncio.get_event_loop().run_until_complete(orch.route(ctx))
+        response = asyncio.run(orch.route(ctx))
 
         assert isinstance(response, AgentResponse)
         assert response.agent_id == "scholarship"
@@ -187,7 +187,7 @@ class TestOrchestrator:
         llm = MockProvider()
         orch = Orchestrator(llm)
         ctx = _ctx("n'importe quoi", goal_type="funding")
-        response = asyncio.get_event_loop().run_until_complete(orch.route(ctx))
+        response = asyncio.run(orch.route(ctx))
 
         assert isinstance(response, AgentResponse)
         assert response.agent_id == "funding"
@@ -197,7 +197,7 @@ class TestOrchestrator:
         llm = MockProvider()
         orch = Orchestrator(llm)
         ctx = _ctx("bonjour comment ça va ?")
-        response = asyncio.get_event_loop().run_until_complete(orch.route(ctx))
+        response = asyncio.run(orch.route(ctx))
 
         assert isinstance(response, AgentResponse)
         assert response.agent_id == "clarification"
@@ -207,7 +207,7 @@ class TestOrchestrator:
         llm = MockProvider()
         orch = Orchestrator(llm)
         ctx = _ctx("je prépare un examen")
-        response = asyncio.get_event_loop().run_until_complete(orch.route(ctx))
+        response = asyncio.run(orch.route(ctx))
 
         # Vérifie que tous les champs du contrat AgentResponse sont présents
         assert hasattr(response, "explanation")

@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from app.models.user import UserRole
 from app.agents.base import AgentContext, AgentResponse
 from app.agents.triage import Triage, TriageResult
 from app.agents.orchestrator import Orchestrator
@@ -17,7 +18,7 @@ from app.main import app
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 def _ctx(message: str, goal_type: str | None = None) -> AgentContext:
@@ -142,7 +143,7 @@ def _make_user():
     user = MagicMock()
     user.id = uuid.uuid4()
     user.email = "test@test.com"
-    user.role = "b2c"
+    user.role = UserRole.b2c
     user.is_active = True
     user.profile = None
     return user

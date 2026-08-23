@@ -1,11 +1,13 @@
 """Tests unitaires pour l'authentification (mock des repos, pas de DB)."""
 
+from datetime import datetime, timezone
 import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app.models.user import UserRole
 from app.core.cookies import ACCESS_COOKIE, REFRESH_COOKIE
 from app.core.deps import get_current_user
 from app.core.security import hash_password
@@ -24,9 +26,9 @@ def _make_user(email: str = "test@example.com", password: str = "password123", p
     user.email = email
     user.phone = phone
     user.password_hash = hash_password(password)
-    user.role = "b2c"
+    user.role = UserRole.b2c
     user.is_active = True
-    user.created_at = "2026-01-01T00:00:00+00:00"
+    user.created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
     profile = MagicMock()
     profile.first_name = "John"
@@ -209,6 +211,7 @@ class TestRegisterPhone:
                 json={
                     "phone": "+2250700000000",
                     "password": "Secure1!pass",
+                    "consent_given": True,
                     "first_name": "Amadou",
                     "last_name": "Koné",
                     "country": "CI",
@@ -247,7 +250,7 @@ class TestRegisterPhone:
 
             resp = client.post(
                 "/auth/register-phone",
-                json={"phone": "+2250700000000", "password": "Secure1!pass"},
+                json={"phone": "+2250700000000", "password": "Secure1!pass", "consent_given": True},
             )
 
         assert resp.status_code == 409

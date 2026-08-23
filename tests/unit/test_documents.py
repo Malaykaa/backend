@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from app.models.user import UserRole
 from app.agents.base import AgentContext, AgentResponse
 from app.agents.document_agent import DocumentAgent
 from app.agents.orchestrator import Orchestrator
@@ -24,7 +25,7 @@ def _make_user():
     user = MagicMock()
     user.id = uuid.uuid4()
     user.email = "doc@test.com"
-    user.role = "b2c"
+    user.role = UserRole.b2c
     user.is_active = True
     user.created_at = "2026-01-01T00:00:00+00:00"
 
@@ -54,7 +55,7 @@ def _make_document(user_id, doc_type="cv"):
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 @pytest.fixture()

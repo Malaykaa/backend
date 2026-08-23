@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from app.models.user import UserRole
 from app.core.deps import get_current_user
 from app.main import app
 from app.models.chat import MessageRole
@@ -19,7 +20,7 @@ def _make_user():
     user = MagicMock()
     user.id = uuid.uuid4()
     user.email = "edit@test.com"
-    user.role = "b2c"
+    user.role = UserRole.b2c
     user.is_active = True
     user.created_at = "2026-01-01T00:00:00+00:00"
     user.profile = None

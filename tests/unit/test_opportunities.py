@@ -6,6 +6,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from app.models.user import UserRole
+from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.main import app
 from app.models.opportunity import OpportunityType, UserOpportunityStatus
@@ -19,7 +21,7 @@ def _make_user():
     user = MagicMock()
     user.id = uuid.uuid4()
     user.email = "opp@test.com"
-    user.role = "b2c"
+    user.role = UserRole.b2c
     user.is_active = True
     user.created_at = "2026-01-01T00:00:00+00:00"
 
@@ -67,6 +69,10 @@ def client():
 def auth_user():
     user = _make_user()
     app.dependency_overrides[get_current_user] = lambda: user
+    # get_db doit aussi être surchargé : la dépendance ouvre une connexion réelle
+    # AVANT l'exécution de la route, donc les tests échouaient sur une erreur de
+    # connexion Postgres alors même que le dépôt est mocké dans chaque test.
+    app.dependency_overrides[get_db] = lambda: MagicMock()
     yield user
     app.dependency_overrides.clear()
 
@@ -79,41 +85,41 @@ class TestScoring:
         """Domain + country + status match → score élevé."""
         opp = _make_opportunity("job", "Informatique", "Sénégal")
         profile = _make_profile("Sénégal", "Informatique", "Développeuse")
-        score = OpportunityService._compute_score(opp, profile)
+        score = OpportunityService._score_from_profile(opp, profile)
         # domain=40 + country=30 + status(développeuse→job)=20 + base=10 = 100
         assert score == 100.0
 
     def test_domain_match_only(self):
         opp = _make_opportunity("scholarship", "Informatique", "France")
         profile = _make_profile("Sénégal", "Informatique", "Manager")
-        score = OpportunityService._compute_score(opp, profile)
+        score = OpportunityService._score_from_profile(opp, profile)
         # domain=40 + country=0 + status=0 + base=10 = 50
         assert score == 50.0
 
     def test_country_match_only(self):
         opp = _make_opportunity("tender", "Agriculture", "Sénégal")
         profile = _make_profile("Sénégal", "Informatique", "Manager")
-        score = OpportunityService._compute_score(opp, profile)
+        score = OpportunityService._score_from_profile(opp, profile)
         # domain=0 + country=30 + status=0 + base=10 = 40
         assert score == 40.0
 
     def test_no_match(self):
         opp = _make_opportunity("grant", "Agronomie", "Belgique")
         profile = _make_profile("Sénégal", "Informatique", "Manager")
-        score = OpportunityService._compute_score(opp, profile)
+        score = OpportunityService._score_from_profile(opp, profile)
         # base=10 only
         assert score == 10.0
 
     def test_no_profile(self):
         opp = _make_opportunity()
-        score = OpportunityService._compute_score(opp, None)
+        score = OpportunityService._score_from_profile(opp, None)
         assert score == 10.0
 
     def test_partial_domain_match(self):
         """Domain partiel (inclusion) → 25 points."""
         opp = _make_opportunity("job", "Data Science", "Sénégal")
         profile = _make_profile("Sénégal", "Data", "Développeuse")
-        score = OpportunityService._compute_score(opp, profile)
+        score = OpportunityService._score_from_profile(opp, profile)
         # domain partial=25 + country=30 + status(développeuse→job)=20 + base=10 = 85
         assert score == 85.0
 
@@ -121,7 +127,7 @@ class TestScoring:
         """Pays 'International' → 15 points au lieu de 30."""
         opp = _make_opportunity("grant", "Informatique", "International")
         profile = _make_profile("Sénégal", "Informatique", "Développeuse")
-        score = OpportunityService._compute_score(opp, profile)
+        score = OpportunityService._score_from_profile(opp, profile)
         # domain=40 + country_intl=15 + base=10 = 65
         assert score == 65.0
 
@@ -129,12 +135,12 @@ class TestScoring:
         """Étudiante + scholarship → status match."""
         opp = _make_opportunity("scholarship", "Sciences", "France")
         profile = _make_profile("Sénégal", "Sciences", "Étudiante en master")
-        score = OpportunityService._compute_score(opp, profile)
+        score = OpportunityService._score_from_profile(opp, profile)
         # domain=40 + country=0 + status=20 + base=10 = 70
         assert score == 70.0
 
     def test_score_capped_at_100(self):
-        score = OpportunityService._compute_score(
+        score = OpportunityService._score_from_profile(
             _make_opportunity("job", "Informatique", "Sénégal"),
             _make_profile("Sénégal", "Informatique", "Développeuse"),
         )
