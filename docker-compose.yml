@@ -55,6 +55,27 @@ services:
     environment:
       REDIS_URL: redis://redis:6379/0
 
+      # Ce fichier ne décrit que la production : ENVIRONMENT y a donc sa place,
+      # et un `environment:` prend le pas sur un .env resté sur "local".
+      #
+      # Tant que la valeur était "local", validate_security_settings() — qui
+      # refuse le démarrage sur une configuration dangereuse — ne s'appliquait
+      # jamais en production, /api/docs restait public, et les cookies de
+      # session étaient émis sans l'attribut Secure
+      # (cf. auth.py : "secure": settings.environment != "local").
+      #
+      # La bascule a été validée à froid par la pré-vérification exécutée dans
+      # le déploiement (run 32664259564) : "AUCUN BLOCAGE". Les quatre
+      # conditions bloquantes sont donc déjà satisfaites côté serveur — secret
+      # JWT non défaut, fournisseur WhatsApp configuré, OTP_MOCK_ACCEPT_ANY
+      # inactif, FRONTEND_URL publique.
+      #
+      # Prérequis tenu : en mode production, OtpService refuse de démarrer si
+      # Redis est injoignable. C'est pourquoi cette bascule vient APRÈS le
+      # correctif REDIS_URL ci-dessus, et le `depends_on: service_healthy`
+      # garantit que redis est sain avant le lancement du backend.
+      ENVIRONMENT: prod
+
     # Pas de publication de port sur l'hôte : nginx ("frontend", cf. son
     # docker-compose.yml) atteint ce service via malaykaa_net par résolution
     # DNS interne (proxy_pass http://backend:8000) — backend-staging fait
