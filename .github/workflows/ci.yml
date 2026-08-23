@@ -175,10 +175,18 @@ jobs:
             #
             # Volontairement non bloquant (`|| true`) : c'est un diagnostic, il
             # ne doit jamais faire échouer un déploiement par ailleurs sain.
+            # BACKEND_IMAGE/IMAGE_TAG doivent être passés ici aussi : ces variables
+            # ne sont définies qu'en préfixe de la commande `up` ci-dessus, elles ne
+            # sont donc pas héritées. Sans elles, compose retombe sur le nom par
+            # défaut du fichier (malaykaa-backend:latest), absent du serveur, et
+            # tente un pull vers Docker Hub qui échoue — le diagnostic renvoyait
+            # alors "BLOCAGE" sans avoir exécuté le moindre contrôle.
             echo "--- Pré-vérification ENVIRONMENT=prod (diagnostic, sans effet) ---"
-            if docker compose run --rm --no-deps -e ENVIRONMENT=prod backend \
+            if BACKEND_IMAGE="${IMAGE}" IMAGE_TAG=latest \
+                 docker compose run --rm --no-deps -e ENVIRONMENT=prod backend \
                  python -c "from app.core.config import validate_security_settings; validate_security_settings(); print('AUCUN BLOCAGE')"; then
               echo ">>> La bascule en ENVIRONMENT=prod est sûre."
             else
-              echo ">>> BLOCAGE : corriger le .env du serveur AVANT de basculer (détail ci-dessus)."
+              echo ">>> BLOCAGE : voir le détail ci-dessus. Si le message parle d'une image"
+              echo ">>> introuvable, c'est le diagnostic lui-même qui a échoué, pas la config."
             fi
