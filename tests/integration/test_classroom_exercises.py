@@ -12,7 +12,7 @@ import uuid
 
 import pytest
 
-from app.core.exceptions import ConflictError, ForbiddenError
+from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError
 from app.models.structure import (
     Classroom,
     ClassroomExercise,
@@ -177,6 +177,91 @@ class TestReglesDeTentatives:
         exercise = _make_exercise(db_session, classroom)
         with pytest.raises(ForbiddenError):
             classroom_exercise_service.start_submission(db_session, exercise_id=exercise.id, user_id=user_id)
+
+
+class TestIntegriteDuCorrige:
+    """La clé de correction ne doit jamais être atteignable avant soumission.
+
+    get_my_result ne filtrait pas sur le statut de la tentative : celle créée par
+    start_submission (in_progress, réponses pré-créées) remontait telle quelle, et
+    la réponse du routeur porte correct_choice_index + explanation. Un élève
+    pouvait donc enchaîner start → my-result → submit et rendre une évaluation
+    notée à 100 % sans avoir répondu.
+    """
+
+    def test_tentative_en_cours_nexpose_pas_le_corrige(self, db_session, classroom, enroll, make_user):
+        user_id, _ = make_user()
+        enroll(user_id)
+        exercise = _make_exercise(db_session, classroom, kind=ClassroomExerciseKind.evaluation)
+        classroom_exercise_service.send_exercise(
+            db_session, exercise_id=exercise.id, target="student", student_user_id=user_id,
+        )
+        db_session.commit()
+
+        classroom_exercise_service.start_submission(db_session, exercise_id=exercise.id, user_id=user_id)
+        db_session.commit()
+
+        # Avant le correctif : renvoyait la tentative in_progress et ses réponses.
+        with pytest.raises(NotFoundError):
+            classroom_exercise_service.get_my_result(
+                db_session, exercise_id=exercise.id, user_id=user_id,
+            )
+
+    def test_resultat_reste_accessible_apres_soumission(self, db_session, classroom, enroll, make_user):
+        """Contre-épreuve : le correctif ne casse pas le parcours normal."""
+        user_id, _ = make_user()
+        enroll(user_id)
+        exercise = _make_exercise(db_session, classroom)
+        classroom_exercise_service.send_exercise(
+            db_session, exercise_id=exercise.id, target="student", student_user_id=user_id,
+        )
+        db_session.commit()
+
+        classroom_exercise_service.start_submission(db_session, exercise_id=exercise.id, user_id=user_id)
+        db_session.commit()
+        classroom_exercise_service.submit_exercise(
+            db_session, exercise_id=exercise.id, user_id=user_id,
+            answers=[(q.id, q.correct_choice_index) for q in exercise.questions],
+        )
+        db_session.commit()
+
+        _, submission, answers = classroom_exercise_service.get_my_result(
+            db_session, exercise_id=exercise.id, user_id=user_id,
+        )
+        assert submission.score_pct == 100
+        assert len(answers) == len(exercise.questions)
+
+    def test_nouvelle_tentative_ne_masque_pas_le_resultat_precedent(
+        self, db_session, classroom, enroll, make_user,
+    ):
+        """Un exercice autorise plusieurs tentatives. En rouvrir une ne doit pas
+        rendre inaccessible le résultat déjà obtenu — le tri par numéro de
+        tentative décroissant retiendrait sinon la nouvelle, encore en cours."""
+        user_id, _ = make_user()
+        enroll(user_id)
+        exercise = _make_exercise(db_session, classroom, kind=ClassroomExerciseKind.exercise)
+        classroom_exercise_service.send_exercise(
+            db_session, exercise_id=exercise.id, target="student", student_user_id=user_id,
+        )
+        db_session.commit()
+
+        classroom_exercise_service.start_submission(db_session, exercise_id=exercise.id, user_id=user_id)
+        db_session.commit()
+        classroom_exercise_service.submit_exercise(
+            db_session, exercise_id=exercise.id, user_id=user_id,
+            answers=[(q.id, q.correct_choice_index) for q in exercise.questions],
+        )
+        db_session.commit()
+
+        # L'élève rouvre une seconde tentative sans la soumettre.
+        classroom_exercise_service.start_submission(db_session, exercise_id=exercise.id, user_id=user_id)
+        db_session.commit()
+
+        _, submission, _ = classroom_exercise_service.get_my_result(
+            db_session, exercise_id=exercise.id, user_id=user_id,
+        )
+        assert submission.attempt_number == 1
+        assert submission.score_pct == 100
 
 
 class TestDetectionDifficulte:
