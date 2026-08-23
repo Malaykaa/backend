@@ -57,13 +57,19 @@ class SearchResult:
     latency_ms: int        # 0 si cached
 
     def to_goal_context(self) -> dict:
-        """Sérialise pour injection dans AgentContext.goal_context."""
+        """Sérialise pour injection dans AgentContext.goal_context.
+
+        N'expose QUE ce qui est utile au modèle. Les métriques internes —
+        latency_ms, cached — restent en dehors : elles n'aident en rien la
+        réponse et n'auraient pour effet que d'encombrer le prompt. `cached`
+        s'y était glissé alors que `latency_ms` en avait été exclu ; les deux
+        relèvent de la même catégorie.
+        """
         return {
             "content": self.content,
             "citations": self.citations,
             "query": self.query,
             "model": self.model,
-            "cached": self.cached,
         }
 
 

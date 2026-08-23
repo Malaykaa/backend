@@ -47,6 +47,32 @@ jobs:
       - name: Exécuter la suite unitaire
         run: python -m pytest tests/unit -q
 
+  # Les tests d'intégration démarrent un vrai Postgres via testcontainers (Docker
+  # est disponible sur les runners GitHub). Volontairement NON BLOQUANT dans un
+  # premier temps : on mesure leur stabilité réelle en CI — démarrage de
+  # conteneurs, lenteur — avant de conditionner les déploiements à leur réussite.
+  # Ce job ne figure donc PAS dans le `needs:` de build.
+  #
+  # Une fois la stabilité constatée sur quelques jours, retirer
+  # continue-on-error et ajouter `integration` au `needs:` de build.
+  integration:
+    name: Tests d'intégration (non bloquant)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"   # même version que le Dockerfile
+          cache: pip
+
+      - name: Installer les dépendances
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Exécuter la suite d'intégration
+        run: python -m pytest tests/integration -q
+
   build:
     name: Build & push image
     runs-on: ubuntu-latest

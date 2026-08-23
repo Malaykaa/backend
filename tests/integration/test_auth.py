@@ -27,6 +27,7 @@ async def test_register_phone_then_me(client):
         json={
             "phone": phone,
             "password": "securepass8",
+            "consent_given": True,
             "first_name": "Aïcha",
             "country": "Sénégal",
         },
@@ -48,12 +49,14 @@ async def test_register_phone_duplicate_returns_409(client):
     phone = f"+22177{uuid.uuid4().int % 10_000_000:07d}"
 
     first = await client.post(
-        "/auth/register-phone", json={"phone": phone, "password": "securepass8"}
+        "/auth/register-phone",
+        json={"phone": phone, "password": "securepass8", "consent_given": True},
     )
     assert first.status_code == 201
 
     second = await client.post(
-        "/auth/register-phone", json={"phone": phone, "password": "anotherpass8"}
+        "/auth/register-phone",
+        json={"phone": phone, "password": "anotherpass8", "consent_given": True},
     )
     assert second.status_code == 409
 
