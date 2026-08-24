@@ -35,6 +35,7 @@ from app.models.structure import (
 )
 from app.models.user import User
 from app.schemas.structure import (
+    ArchiveResult,
     ClassroomCreate,
     ClassroomDashboardResponse,
     ClassroomJoinAccept,
@@ -82,6 +83,7 @@ from app.schemas.structure import (
     MyCourseProgressResponse,
     MyDeliveriesResponse,
     RecipientProgressResponse,
+    RemoveResult,
     RosterEntryResponse,
     RosterImportRequest,
     StepProgressResponse,
@@ -1275,3 +1277,108 @@ async def ai_assist_section(
         max_tokens=2000,
     )
     return _AiAssistResponse(result=result)
+
+
+# ── Cycle de vie : archivage et retrait ───────────────────────────────────────
+#
+# Aucune suppression reelle : toutes ces operations sont reversibles (un
+# `archived=false` / `removed=false` les annule). C'est volontaire — une
+# suppression definitive rendrait une erreur d'archivage aussi irreparable que
+# le probleme qu'on corrige.
+
+
+@router.post("/{structure_id}/classrooms/{classroom_id}/archive", response_model=ArchiveResult)
+def archive_classroom(
+    structure_id: uuid.UUID,
+    classroom_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    archived: bool = True,
+):
+    """Archive (ou desarchive) une salle. Reserve au super_admin de la structure."""
+    _require_super_admin(db, current_user.id, structure_id)
+    classroom = structure_service.archive_classroom(db, classroom_id, archived=archived)
+    db.commit()
+    return ArchiveResult(id=str(classroom.id), archived=classroom.archived_at is not None)
+
+
+@router.post(
+    "/{structure_id}/classrooms/{classroom_id}/courses/{course_id}/archive",
+    response_model=ArchiveResult,
+)
+def archive_course(
+    structure_id: uuid.UUID,
+    classroom_id: uuid.UUID,
+    course_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    archived: bool = True,
+):
+    _require_classroom_admin(db, current_user.id, structure_id, classroom_id)
+    course = classroom_course_service.archive_course(db, course_id, archived=archived)
+    db.commit()
+    return ArchiveResult(id=str(course.id), archived=course.archived_at is not None)
+
+
+@router.post(
+    "/{structure_id}/classrooms/{classroom_id}/exercises/{exercise_id}/archive",
+    response_model=ArchiveResult,
+)
+def archive_exercise(
+    structure_id: uuid.UUID,
+    classroom_id: uuid.UUID,
+    exercise_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    archived: bool = True,
+):
+    """Seule reponse a un exercice envoye par erreur : son contenu est fige des
+    le premier destinataire, il ne peut donc plus etre corrige."""
+    _require_classroom_admin(db, current_user.id, structure_id, classroom_id)
+    exercise = classroom_exercise_service.archive_exercise(db, exercise_id, archived=archived)
+    db.commit()
+    return ArchiveResult(id=str(exercise.id), archived=exercise.archived_at is not None)
+
+
+@router.post(
+    "/{structure_id}/classrooms/{classroom_id}/members/{user_id}/remove",
+    response_model=RemoveResult,
+)
+def remove_member(
+    structure_id: uuid.UUID,
+    classroom_id: uuid.UUID,
+    user_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    removed: bool = True,
+):
+    """Retire un eleve de la salle (ou annule le retrait). Ses cours et exercices
+    deja recus lui restent."""
+    _require_classroom_admin(db, current_user.id, structure_id, classroom_id)
+    membership = structure_service.remove_member(
+        db, classroom_id=classroom_id, user_id=user_id, removed=removed,
+    )
+    db.commit()
+    return RemoveResult(user_id=str(membership.user_id), removed=membership.removed_at is not None)
+
+
+@router.post(
+    "/{structure_id}/classrooms/{classroom_id}/teachers/{user_id}/remove",
+    response_model=RemoveResult,
+)
+def remove_classroom_teacher(
+    structure_id: uuid.UUID,
+    classroom_id: uuid.UUID,
+    user_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    removed: bool = True,
+):
+    """Retire l'affectation d'un enseignant a cette salle. Son appartenance a la
+    structure n'est pas touchee. Reserve au super_admin."""
+    _require_super_admin(db, current_user.id, structure_id)
+    assignment = structure_service.remove_classroom_teacher(
+        db, classroom_id=classroom_id, user_id=user_id, removed=removed,
+    )
+    db.commit()
+    return RemoveResult(user_id=str(user_id), removed=assignment.removed_at is not None)

@@ -28,13 +28,24 @@ from app.models.structure import (
 
 
 def list_my_deliveries(db: Session, user_id: uuid.UUID) -> list[dict]:
+    """Cours et exercices recus par cet eleve.
+
+    Les contenus archives par l'enseignant, et ceux des salles archivees, sont
+    retires de la liste : un exercice envoye par erreur ne doit plus apparaitre
+    a l'eleve. Rien n'est detruit pour autant — les soumissions deja faites
+    restent en base et continuent d'alimenter les rapports.
+    """
     items: list[dict] = []
 
     course_rows = db.execute(
         select(ClassroomCourseRecipient, ClassroomCourse, Classroom)
         .join(ClassroomCourse, ClassroomCourseRecipient.course_id == ClassroomCourse.id)
         .join(Classroom, ClassroomCourse.classroom_id == Classroom.id)
-        .where(ClassroomCourseRecipient.user_id == user_id)
+        .where(
+            ClassroomCourseRecipient.user_id == user_id,
+            ClassroomCourse.archived_at.is_(None),
+            Classroom.archived_at.is_(None),
+        )
     ).all()
     for recipient, course, classroom in course_rows:
         progress_rows = db.execute(
@@ -58,7 +69,11 @@ def list_my_deliveries(db: Session, user_id: uuid.UUID) -> list[dict]:
         select(ClassroomExerciseRecipient, ClassroomExercise, Classroom)
         .join(ClassroomExercise, ClassroomExerciseRecipient.exercise_id == ClassroomExercise.id)
         .join(Classroom, ClassroomExercise.classroom_id == Classroom.id)
-        .where(ClassroomExerciseRecipient.user_id == user_id)
+        .where(
+            ClassroomExerciseRecipient.user_id == user_id,
+            ClassroomExercise.archived_at.is_(None),
+            Classroom.archived_at.is_(None),
+        )
     ).all()
     for recipient, exercise, classroom in exercise_rows:
         submissions = db.execute(

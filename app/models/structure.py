@@ -140,6 +140,12 @@ class Classroom(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     # Code court partagé dans le lien d'invitation étudiant (Phase 2).
     invite_code: Mapped[str] = mapped_column(String(20), unique=True, nullable=False, index=True)
+    # Archivage — jamais de suppression reelle. Une suppression detruirait les
+    # progressions, les resultats et l'historique des rapports d'impact ; elle
+    # rendrait aussi une erreur d'archivage definitive, ce qui recreerait
+    # exactement le probleme qu'on cherche a resoudre. Horodatage plutot que
+    # booleen : on veut savoir QUAND, et c'est reversible en remettant a NULL.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
@@ -165,6 +171,9 @@ class ClassroomTeacher(Base):
     structure_member_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("structure_members.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    # Retrait de l'affectation a cette salle (l'appartenance a la structure, elle,
+    # reste geree par StructureMember).
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
@@ -294,6 +303,10 @@ class ClassroomMembership(Base):
     roster_entry_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("classroom_roster_entries.id", ondelete="SET NULL"), nullable=True
     )
+    # Retrait d'un eleve de la salle. Les cours et exercices deja recus restent
+    # les siens : les destinataires sont materialises a l'envoi, precisement pour
+    # que la progression survive au depart (cf. ClassroomCourseRecipient).
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
@@ -335,6 +348,9 @@ class ClassroomCourse(Base):
     explanation: Mapped[str] = mapped_column(Text, nullable=False)
     sources: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     suggestions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Archive : retire des listes enseignant et des livraisons eleve, sans rien
+    # detruire (cf. Classroom.archived_at).
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
@@ -437,6 +453,9 @@ class ClassroomExercise(Base):
     source_course_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("classroom_courses.id", ondelete="SET NULL"), nullable=True
     )
+    # Archive : cf. Classroom.archived_at. Les soumissions deja faites restent
+    # intactes et continuent d'alimenter le rapport de difficulte.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )

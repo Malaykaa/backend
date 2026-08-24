@@ -125,7 +125,10 @@ def list_courses(db: Session, classroom_id: uuid.UUID) -> list[ClassroomCourse]:
     return list(
         db.execute(
             select(ClassroomCourse)
-            .where(ClassroomCourse.classroom_id == classroom_id)
+            .where(
+                ClassroomCourse.classroom_id == classroom_id,
+                ClassroomCourse.archived_at.is_(None),
+            )
             .order_by(ClassroomCourse.created_at.desc())
         ).scalars().all()
     )
@@ -653,3 +656,18 @@ async def _generate_evolution_plans_locked(
                 continue
 
     return generated
+
+
+def archive_course(db: Session, course_id: uuid.UUID, *, archived: bool = True) -> ClassroomCourse:
+    """Archive ou desarchive un cours (ou un plan d'evolution).
+
+    Il disparait des listes enseignant et des livraisons eleve, mais les
+    destinataires, la progression et les rapports restent intacts. Reversible :
+    un archivage fait par erreur n'est pas un incident.
+    """
+    course = db.get(ClassroomCourse, course_id)
+    if not course:
+        raise NotFoundError("Cours")
+    course.archived_at = datetime.now(timezone.utc) if archived else None
+    db.flush()
+    return course
