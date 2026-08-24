@@ -750,3 +750,61 @@ def _serialize(
         "match_score": round(max(0.0, min(100.0, match_score)), 1),
         "match_mode": match_mode,
     }
+
+
+# Types d'offres qui constituent une ressource pedagogique. Volontairement pas
+# job/scholarship/grant : on repond ici a "je bute sur cette notion", pas a
+# "je cherche un emploi".
+_RESOURCE_TYPES = ["formation", "resource"]
+
+
+def search_resources_for_topics(
+    db, topics: list[str], *, country: str | None = None, limit: int = 3,
+) -> list[dict]:
+    """Ressources reelles de la base correspondant aux notions ratees.
+
+    Lit uniquement des lignes existantes de scraped_offers : rien n'est genere
+    ni invente. Meme garde-fou anti-hallucination que pour les offres montrees
+    en conversation — le contenu factuel vient toujours de la base.
+
+    Renvoie [] quand la base n'a rien de pertinent, et c'est le comportement
+    voulu : mieux vaut ne rien proposer qu'une ressource hors sujet. La collecte
+    planifiee alimente la base au fil du temps.
+    """
+    from app.repositories.scraped_offer_repo import ScrapedOfferRepository  # noqa: PLC0415
+
+    terms = [t.strip() for t in topics if t and t.strip()]
+    if not terms:
+        return []
+
+    offers = ScrapedOfferRepository(db).search_by_keywords(
+        terms=terms, country=country, offer_types=_RESOURCE_TYPES, limit=limit,
+    )
+    return [_serialize_for_agent(o) for o in offers]
+
+
+# Types d'offres qui constituent un debouche. Pendant de _RESOURCE_TYPES : ici on
+# repond a "j'ai acquis cette competence, qu'est-ce que ca m'ouvre ?".
+_OPPORTUNITY_TYPES = ["job", "opportunity", "formation"]
+
+
+def search_opportunities_for_skills(
+    db, skills: list[str], *, country: str | None = None, limit: int = 3,
+) -> list[dict]:
+    """Opportunites reelles de la base correspondant a des competences acquises.
+
+    C'est le pont entre Malayka Institution et le reste de la plateforme : ce que
+    l'eleve vient de demontrer en evaluation devient un critere de recherche
+    d'opportunites reelles. Meme garde-fou que partout ailleurs — uniquement des
+    lignes existantes de scraped_offers, jamais de contenu genere.
+    """
+    from app.repositories.scraped_offer_repo import ScrapedOfferRepository  # noqa: PLC0415
+
+    terms = [t.strip() for t in skills if t and t.strip()]
+    if not terms:
+        return []
+
+    offers = ScrapedOfferRepository(db).search_by_keywords(
+        terms=terms, country=country, offer_types=_OPPORTUNITY_TYPES, limit=limit,
+    )
+    return [_serialize_for_agent(o) for o in offers]

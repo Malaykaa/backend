@@ -439,6 +439,44 @@ class ClassroomDifficultyStudentItem(BaseModel):
     trend: str | None  # "improving" | "flat" | "declining" | None
 
 
+class StudentMasteredTopic(BaseModel):
+    """Notion demontree en evaluation. Le seuil de maitrise est plus exigeant que
+    celui de difficulte : annoncer une competence acquise engage davantage qu'un
+    signalement de difficulte."""
+
+    topic_tag: str
+    success_rate: float
+    questions_seen: int
+
+
+class MyNextStepsItem(BaseModel):
+    """Ce que l'eleve a valide dans une salle, et ce que cela lui ouvre.
+
+    Pendant de MyDifficultyItem : jusqu'ici un eleve qui reussissait ne recevait
+    rien. Les opportunites viennent de scraped_offers, jamais d'une generation.
+    """
+
+    classroom_id: str
+    classroom_name: str
+    mastered_topics: list[StudentMasteredTopic]
+    opportunities: list[StudentResourceItem] = []
+
+
+class StudentResourceItem(BaseModel):
+    """Ressource proposee a un eleve en difficulte sur une notion.
+
+    Meme forme que les cartes d'offre du chat : contenu issu de la base,
+    jamais d'une generation.
+    """
+
+    offer_ref: str
+    title: str
+    url: str | None = None
+    company: str | None = None
+    type: str | None = None
+    description: str | None = None
+
+
 class MyDifficultyItem(BaseModel):
     """Vue ELEVE de son propre diagnostic, par salle.
 
@@ -452,6 +490,9 @@ class MyDifficultyItem(BaseModel):
     avg_score_pct: int
     trend: str | None  # "improving" | "flat" | "declining" | None
     flagged_topics: list[StudentTopicFlag]
+    # Ressources reelles de la base correspondant aux notions ratees. Jamais
+    # generees : lignes de scraped_offers servies telles quelles.
+    resources: list[StudentResourceItem] = []
 
 
 class TopicDifficultyItem(BaseModel):
