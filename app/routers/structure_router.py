@@ -6,6 +6,7 @@ app.services.structure_access (point de vérité unique, cf. son docstring).
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime
 from typing import Annotated, Literal
@@ -36,6 +37,7 @@ from app.models.structure import (
 from app.models.user import User
 from app.schemas.structure import (
     MyDifficultyItem,
+    StudentResourceItem,
     ClassroomCreate,
     ClassroomDashboardResponse,
     ClassroomJoinAccept,
@@ -102,6 +104,8 @@ from app.services import (
 from app.services.whatsapp_service import whatsapp_service
 
 router = APIRouter(prefix="/structures", tags=["structures"])
+
+logger = logging.getLogger(__name__)
 
 
 def _require_super_admin(db: Session, user_id: uuid.UUID, structure_id: uuid.UUID) -> None:
@@ -1101,10 +1105,37 @@ def _exercise_result_response(exercise, submission, answers) -> ExerciseResultRe
     )
 
 
+async def _plan_accompagnement_en_arriere_plan(
+    classroom_id: uuid.UUID, user_id: uuid.UUID, subject: str | None,
+) -> None:
+    """Genere le plan APRES la reponse HTTP, avec sa propre session.
+
+    La generation appelle le LLM (plusieurs secondes) : la faire dans le chemin
+    de soumission ferait attendre l'eleve devant sa copie, et un incident du
+    fournisseur ferait echouer une soumission par ailleurs valide. La correction
+    reste donc deterministe et immediate ; l'accompagnement arrive ensuite.
+
+    N'echoue jamais bruyamment : un plan non genere est un manque, pas une
+    perte — la note et les reponses sont deja enregistrees.
+    """
+    from app.core.database import SessionLocal  # noqa: PLC0415
+
+    try:
+        with SessionLocal() as bg_db:
+            await classroom_course_service.generate_support_plan_for_student(
+                bg_db, classroom_id=classroom_id, user_id=user_id, subject=subject,
+            )
+    except Exception:
+        logger.exception(
+            "[Plan auto] echec de generation pour user=%s classroom=%s", user_id, classroom_id,
+        )
+
+
 @router.post("/classroom-exercises/{exercise_id}/submit", response_model=ExerciseResultResponse)
 def submit_exercise(
     exercise_id: uuid.UUID,
     body: ExerciseSubmitRequest,
+    background_tasks: BackgroundTasks,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ):
@@ -1117,6 +1148,16 @@ def submit_exercise(
     answers = db.execute(
         select(ClassroomExerciseAnswer).where(ClassroomExerciseAnswer.submission_id == submission.id)
     ).scalars().all()
+
+    # Les objectifs du cours SONT les evaluations : sous le seuil, l'objectif
+    # n'est pas atteint et un plan d'accompagnement part automatiquement, sans
+    # attendre une action de l'enseignant.
+    if classroom_course_service.needs_support_plan(submission.score_pct):
+        background_tasks.add_task(
+            _plan_accompagnement_en_arriere_plan,
+            exercise.classroom_id, current_user.id, exercise.subject,
+        )
+
     return _exercise_result_response(exercise, submission, answers)
 
 
@@ -1299,6 +1340,7 @@ def get_my_difficulty(
             avg_score_pct=item["avg_score_pct"],
             trend=item["trend"],
             flagged_topics=[StudentTopicFlag(**f) for f in item["flagged_topics"]],
+            resources=[StudentResourceItem(**r) for r in item["resources"]],
         )
         for item in classroom_exercise_service.get_my_difficulty(db, user_id=current_user.id)
     ]

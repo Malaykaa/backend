@@ -609,11 +609,25 @@ def get_my_difficulty(db: Session, *, user_id: uuid.UUID) -> list[dict]:
         if not student:
             continue
         classroom = db.get(Classroom, classroom_id)
+        flagged = student["flagged_topics"]
+
+        # Ressources reelles de la base correspondant aux notions ratees : ce
+        # sont des lignes de scraped_offers (types formation et resource),
+        # jamais du contenu genere. Liste vide si la base n'a rien de pertinent.
+        from app.services import scraped_offer_service  # noqa: PLC0415
+
+        user = db.get(User, user_id)
+        country = user.profile.country if user and user.profile else None
+        resources = scraped_offer_service.search_resources_for_topics(
+            db, [f["topic_tag"] for f in flagged], country=country,
+        )
+
         items.append({
             "classroom_id": str(classroom_id),
             "classroom_name": classroom.name if classroom else "",
             "avg_score_pct": student["avg_score_pct"],
             "trend": student["trend"],
-            "flagged_topics": student["flagged_topics"],
+            "flagged_topics": flagged,
+            "resources": resources,
         })
     return items

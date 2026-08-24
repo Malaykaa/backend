@@ -439,6 +439,21 @@ class ClassroomDifficultyStudentItem(BaseModel):
     trend: str | None  # "improving" | "flat" | "declining" | None
 
 
+class StudentResourceItem(BaseModel):
+    """Ressource proposee a un eleve en difficulte sur une notion.
+
+    Meme forme que les cartes d'offre du chat : contenu issu de la base,
+    jamais d'une generation.
+    """
+
+    offer_ref: str
+    title: str
+    url: str | None = None
+    company: str | None = None
+    type: str | None = None
+    description: str | None = None
+
+
 class MyDifficultyItem(BaseModel):
     """Vue ELEVE de son propre diagnostic, par salle.
 
@@ -452,6 +467,9 @@ class MyDifficultyItem(BaseModel):
     avg_score_pct: int
     trend: str | None  # "improving" | "flat" | "declining" | None
     flagged_topics: list[StudentTopicFlag]
+    # Ressources reelles de la base correspondant aux notions ratees. Jamais
+    # generees : lignes de scraped_offers servies telles quelles.
+    resources: list[StudentResourceItem] = []
 
 
 class TopicDifficultyItem(BaseModel):
