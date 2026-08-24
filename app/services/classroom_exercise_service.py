@@ -26,6 +26,7 @@ from app.core.exceptions import BadRequestError, ConflictError, ForbiddenError, 
 from app.models.chat import MessageRole
 from app.models.notification import UserNotification
 from app.models.structure import (
+    Classroom,
     ClassroomCourse,
     ClassroomExercise,
     ClassroomExerciseAnswer,
@@ -460,7 +461,16 @@ def _normalize_topic(tag: str) -> str:
     return re.sub(r"\s+", " ", folded).strip()
 
 
-def get_classroom_difficulty_report(db: Session, *, classroom_id: uuid.UUID) -> dict:
+def get_classroom_difficulty_report(
+    db: Session, *, classroom_id: uuid.UUID, subject: str | None = None,
+) -> dict:
+    """Notions les moins maitrisees de la classe, a partir des soumissions reelles.
+
+    `subject` restreint le calcul a une matiere. Necessaire pour alimenter un
+    plan d'evolution, qui est genere PAR MATIERE : sans ce filtre, un plan de
+    maths recevrait les resultats de toutes les matieres de la salle. Par defaut
+    None — le rapport enseignant reste inchange, toutes matieres confondues.
+    """
     rows = db.execute(
         select(
             ClassroomExerciseRecipient.user_id,
@@ -474,6 +484,7 @@ def get_classroom_difficulty_report(db: Session, *, classroom_id: uuid.UUID) -> 
         .where(
             ClassroomExercise.classroom_id == classroom_id,
             ClassroomExerciseSubmission.status == ExerciseSubmissionStatus.submitted,
+            *([ClassroomExercise.subject == subject] if subject is not None else []),
         )
     ).all()
 
@@ -556,9 +567,53 @@ def get_classroom_difficulty_report(db: Session, *, classroom_id: uuid.UUID) -> 
     return {"students": students, "topics": topics_report, "insufficient_data": False}
 
 
-def get_student_difficulty_detail(db: Session, *, classroom_id: uuid.UUID, user_id: uuid.UUID) -> dict:
-    report = get_classroom_difficulty_report(db, classroom_id=classroom_id)
+def get_student_difficulty_detail(
+    db: Session, *, classroom_id: uuid.UUID, user_id: uuid.UUID, subject: str | None = None,
+) -> dict:
+    report = get_classroom_difficulty_report(db, classroom_id=classroom_id, subject=subject)
     if report["insufficient_data"]:
         return {"insufficient_data": True, "student": None}
     student = next((s for s in report["students"] if s["user_id"] == user_id), None)
     return {"insufficient_data": student is None, "student": student}
+
+
+def get_my_difficulty(db: Session, *, user_id: uuid.UUID) -> list[dict]:
+    """Notions sur lesquelles CET eleve bute, dans chacune de ses salles.
+
+    Le diagnostic par notion existait deja, mais uniquement cote enseignant
+    (routes protegees par _require_classroom_admin). Le systeme savait donc
+    qu'un eleve bloquait sur une notion precise sans jamais le lui dire : il ne
+    voyait qu'un score. C'est ce retour qui manquait pour qu'un resultat mene a
+    une action plutot qu'a un constat.
+
+    Ne renvoie QUE les donnees de cet eleve. Volontairement pas le champ
+    `topics` du rapport de classe, qui agrege les resultats des autres eleves.
+
+    Le seuil de signalement (_MIN_QUESTIONS_SEEN, _MIN_WRONG_RATE) est celui du
+    rapport enseignant : on ne declare pas une notion "non maitrisee" sur un
+    echec isole, a plus forte raison quand c'est l'eleve qui le lit.
+    """
+    memberships = list(
+        db.execute(
+            select(ClassroomMembership.classroom_id).where(
+                ClassroomMembership.user_id == user_id,
+                ClassroomMembership.status == MembershipStatus.accepted,
+            )
+        ).scalars().all()
+    )
+
+    items: list[dict] = []
+    for classroom_id in memberships:
+        detail = get_student_difficulty_detail(db, classroom_id=classroom_id, user_id=user_id)
+        student = detail.get("student")
+        if not student:
+            continue
+        classroom = db.get(Classroom, classroom_id)
+        items.append({
+            "classroom_id": str(classroom_id),
+            "classroom_name": classroom.name if classroom else "",
+            "avg_score_pct": student["avg_score_pct"],
+            "trend": student["trend"],
+            "flagged_topics": student["flagged_topics"],
+        })
+    return items

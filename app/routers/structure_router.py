@@ -35,6 +35,7 @@ from app.models.structure import (
 )
 from app.models.user import User
 from app.schemas.structure import (
+    MyDifficultyItem,
     ClassroomCreate,
     ClassroomDashboardResponse,
     ClassroomJoinAccept,
@@ -1275,3 +1276,29 @@ async def ai_assist_section(
         max_tokens=2000,
     )
     return _AiAssistResponse(result=result)
+
+
+@router.get("/my-difficulty", response_model=list[MyDifficultyItem])
+def get_my_difficulty(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    """Notions sur lesquelles l'eleve connecte bute, dans chacune de ses salles.
+
+    Pendant eleve du tableau de bord enseignant : le meme diagnostic existait
+    deja, mais uniquement derriere _require_classroom_admin. L'eleve ne voyait
+    donc que son score, jamais la notion en cause.
+
+    Pas de parametre d'identifiant : on ne lit que current_user, il est donc
+    impossible de demander le diagnostic d'un autre eleve.
+    """
+    return [
+        MyDifficultyItem(
+            classroom_id=item["classroom_id"],
+            classroom_name=item["classroom_name"],
+            avg_score_pct=item["avg_score_pct"],
+            trend=item["trend"],
+            flagged_topics=[StudentTopicFlag(**f) for f in item["flagged_topics"]],
+        )
+        for item in classroom_exercise_service.get_my_difficulty(db, user_id=current_user.id)
+    ]

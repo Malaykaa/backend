@@ -439,6 +439,21 @@ class ClassroomDifficultyStudentItem(BaseModel):
     trend: str | None  # "improving" | "flat" | "declining" | None
 
 
+class MyDifficultyItem(BaseModel):
+    """Vue ELEVE de son propre diagnostic, par salle.
+
+    Volontairement sans le champ `topics` du rapport de classe, qui agrege les
+    resultats des autres eleves : cette reponse ne doit contenir que ce qui
+    concerne celui qui la demande.
+    """
+
+    classroom_id: str
+    classroom_name: str
+    avg_score_pct: int
+    trend: str | None  # "improving" | "flat" | "declining" | None
+    flagged_topics: list[StudentTopicFlag]
+
+
 class TopicDifficultyItem(BaseModel):
     topic_tag: str
     class_success_rate: int

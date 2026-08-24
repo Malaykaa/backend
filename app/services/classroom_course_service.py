@@ -473,6 +473,31 @@ def _build_progress_summary(
             status = progress_by_step.get(step.id, ClassroomStepStatus.todo)
             mark = "[terminé]" if status == ClassroomStepStatus.done else "[non terminé]"
             lines.append(f"- {step.label} {mark}")
+
+    # Résultats réels aux exercices — import local pour éviter un cycle
+    # (classroom_exercise_service importe déjà des éléments de ce module).
+    from app.services import classroom_exercise_service  # noqa: PLC0415
+
+    detail = classroom_exercise_service.get_student_difficulty_detail(
+        db, classroom_id=classroom_id, user_id=user_id, subject=subject,
+    )
+    student = detail.get("student")
+    if student:
+        tendance = f", tendance {student['trend']}" if student.get("trend") else ""
+        lines.append(
+            f"\nRésultats aux exercices — moyenne {student['avg_score_pct']}%{tendance}"
+        )
+        flagged = student.get("flagged_topics") or []
+        if flagged:
+            lines.append("Notions les moins maîtrisées (à traiter en priorité) :")
+            for f in flagged:
+                lines.append(
+                    f"- {f['topic_tag']} : {round(f['wrong_rate'] * 100)}% d'erreurs "
+                    f"sur {f['questions_seen']} questions"
+                )
+        else:
+            lines.append("Aucune notion en difficulté marquée à ce stade.")
+
     return "\n".join(lines)
 
 
