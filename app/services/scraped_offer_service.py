@@ -781,3 +781,30 @@ def search_resources_for_topics(
         terms=terms, country=country, offer_types=_RESOURCE_TYPES, limit=limit,
     )
     return [_serialize_for_agent(o) for o in offers]
+
+
+# Types d'offres qui constituent un debouche. Pendant de _RESOURCE_TYPES : ici on
+# repond a "j'ai acquis cette competence, qu'est-ce que ca m'ouvre ?".
+_OPPORTUNITY_TYPES = ["job", "opportunity", "formation"]
+
+
+def search_opportunities_for_skills(
+    db, skills: list[str], *, country: str | None = None, limit: int = 3,
+) -> list[dict]:
+    """Opportunites reelles de la base correspondant a des competences acquises.
+
+    C'est le pont entre Malayka Institution et le reste de la plateforme : ce que
+    l'eleve vient de demontrer en evaluation devient un critere de recherche
+    d'opportunites reelles. Meme garde-fou que partout ailleurs — uniquement des
+    lignes existantes de scraped_offers, jamais de contenu genere.
+    """
+    from app.repositories.scraped_offer_repo import ScrapedOfferRepository  # noqa: PLC0415
+
+    terms = [t.strip() for t in skills if t and t.strip()]
+    if not terms:
+        return []
+
+    offers = ScrapedOfferRepository(db).search_by_keywords(
+        terms=terms, country=country, offer_types=_OPPORTUNITY_TYPES, limit=limit,
+    )
+    return [_serialize_for_agent(o) for o in offers]

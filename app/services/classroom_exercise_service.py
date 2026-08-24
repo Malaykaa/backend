@@ -440,6 +440,12 @@ def get_results_matrix(
 _MIN_WRONG_RATE = 0.5
 _MIN_QUESTIONS_SEEN = 2
 
+# Au-dessous de ce taux d'erreur, la notion est consideree acquise. Volontairement
+# plus exigeant que le simple complement de _MIN_WRONG_RATE : entre les deux se
+# trouve une zone grise ou l'on ne conclut rien — ni difficulte, ni maitrise.
+# Annoncer une competence acquise engage plus qu'un signalement de difficulte.
+_MAX_WRONG_RATE_MASTERED = 0.2
+
 
 def _normalize_topic(tag: str) -> str:
     """Clé de regroupement des notions, insensible à la casse, aux accents et à
@@ -525,11 +531,21 @@ def get_classroom_difficulty_report(
     students = []
     for user_id, topics in by_student.items():
         flagged = []
+        mastered = []
         for topic, results in topics.items():
             wrong_rate = 1 - (sum(results) / len(results))
-            if wrong_rate >= _MIN_WRONG_RATE and len(results) >= _MIN_QUESTIONS_SEEN:
+            if len(results) < _MIN_QUESTIONS_SEEN:
+                # Trop peu de questions vues pour conclure dans un sens ou dans
+                # l'autre : ni difficulte avereee, ni maitrise demontree.
+                continue
+            if wrong_rate >= _MIN_WRONG_RATE:
                 flagged.append({
                     "topic_tag": _label(topic), "wrong_rate": round(wrong_rate, 2),
+                    "questions_seen": len(results),
+                })
+            elif wrong_rate <= _MAX_WRONG_RATE_MASTERED:
+                mastered.append({
+                    "topic_tag": _label(topic), "success_rate": round(1 - wrong_rate, 2),
                     "questions_seen": len(results),
                 })
 
@@ -549,7 +565,7 @@ def get_classroom_difficulty_report(
 
         students.append({
             "user_id": user_id, "user_name": user_name, "avg_score_pct": avg_score_pct,
-            "flagged_topics": flagged, "trend": trend,
+            "flagged_topics": flagged, "mastered_topics": mastered, "trend": trend,
         })
 
     topics_report = [
@@ -629,5 +645,53 @@ def get_my_difficulty(db: Session, *, user_id: uuid.UUID) -> list[dict]:
             "trend": student["trend"],
             "flagged_topics": flagged,
             "resources": resources,
+        })
+    return items
+
+
+def get_my_next_steps(db: Session, *, user_id: uuid.UUID) -> list[dict]:
+    """Ce que l'eleve a valide, et les opportunites reelles que cela lui ouvre.
+
+    Pendant de get_my_difficulty. Jusqu'ici un eleve qui REUSSISSAIT ne recevait
+    rien : le parcours s'arretait sur la note, au moment ou il est pourtant le
+    plus disponible pour la suite.
+
+    C'est aussi le pont entre Malayka Institution et le reste de la plateforme —
+    ce qui est demontre en evaluation devient un critere de recherche d'offres
+    reelles. Rien n'est genere : uniquement des lignes de scraped_offers.
+    """
+    from app.services import scraped_offer_service  # noqa: PLC0415
+
+    memberships = list(
+        db.execute(
+            select(ClassroomMembership.classroom_id).where(
+                ClassroomMembership.user_id == user_id,
+                ClassroomMembership.status == MembershipStatus.accepted,
+            )
+        ).scalars().all()
+    )
+
+    user = db.get(User, user_id)
+    country = user.profile.country if user and user.profile else None
+
+    items: list[dict] = []
+    for classroom_id in memberships:
+        detail = get_student_difficulty_detail(db, classroom_id=classroom_id, user_id=user_id)
+        student = detail.get("student")
+        if not student:
+            continue
+        mastered = student.get("mastered_topics") or []
+        if not mastered:
+            # Rien de demontre : on n'annonce pas d'acquis, et donc pas de suite.
+            continue
+
+        classroom = db.get(Classroom, classroom_id)
+        items.append({
+            "classroom_id": str(classroom_id),
+            "classroom_name": classroom.name if classroom else "",
+            "mastered_topics": mastered,
+            "opportunities": scraped_offer_service.search_opportunities_for_skills(
+                db, [m["topic_tag"] for m in mastered], country=country,
+            ),
         })
     return items

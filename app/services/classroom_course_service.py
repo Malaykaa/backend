@@ -26,6 +26,7 @@ from app.models.chat import MessageRole
 from app.models.notification import UserNotification
 from app.models.user import User
 from app.models.structure import (
+    ClassroomExerciseKind,
     Classroom,
     ClassroomCourse,
     ClassroomCourseKind,
@@ -693,9 +694,30 @@ SUPPORT_PLAN_SCORE_THRESHOLD = 50
 SUPPORT_PLAN_COOLDOWN_DAYS = 7
 
 
-def needs_support_plan(score_pct: int | None) -> bool:
-    """Regle unique du declenchement, isolee pour etre testable et modifiable."""
-    return score_pct is not None and score_pct < SUPPORT_PLAN_SCORE_THRESHOLD
+# Un exercice est un ENTRAINEMENT a tentatives illimitees : rater la premiere
+# fois en est le principe meme. Declencher une remediation la serait premature.
+# On attend donc un echec repete, signe qu'un eleve est reellement bloque et non
+# simplement en train d'apprendre. Une evaluation, elle, est notee et a tentative
+# unique : la rater signifie que l'objectif n'est pas atteint.
+SUPPORT_PLAN_MIN_FAILED_ATTEMPTS_EXERCISE = 2
+
+
+def needs_support_plan(
+    score_pct: int | None,
+    *,
+    kind: ClassroomExerciseKind | None = None,
+    failed_attempts: int = 1,
+) -> bool:
+    """Regle unique du declenchement, isolee pour etre testable et modifiable.
+
+    `kind` et `failed_attempts` sont optionnels : sans eux, la regle se ramene au
+    seul seuil de score, ce qui reste le comportement attendu pour une evaluation.
+    """
+    if score_pct is None or score_pct >= SUPPORT_PLAN_SCORE_THRESHOLD:
+        return False
+    if kind == ClassroomExerciseKind.exercise:
+        return failed_attempts >= SUPPORT_PLAN_MIN_FAILED_ATTEMPTS_EXERCISE
+    return True
 
 
 def _plan_recent_existe(

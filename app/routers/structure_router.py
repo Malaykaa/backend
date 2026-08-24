@@ -37,6 +37,8 @@ from app.models.structure import (
 from app.models.user import User
 from app.schemas.structure import (
     MyDifficultyItem,
+    MyNextStepsItem,
+    StudentMasteredTopic,
     StudentResourceItem,
     ClassroomCreate,
     ClassroomDashboardResponse,
@@ -1152,7 +1154,19 @@ def submit_exercise(
     # Les objectifs du cours SONT les evaluations : sous le seuil, l'objectif
     # n'est pas atteint et un plan d'accompagnement part automatiquement, sans
     # attendre une action de l'enseignant.
-    if classroom_course_service.needs_support_plan(submission.score_pct):
+    #
+    # Pour un EXERCICE (entrainement, tentatives illimitees), on attend un echec
+    # repete : rater une premiere fois est le principe meme de l'entrainement.
+    echecs = sum(
+        1
+        for a in classroom_exercise_service.get_my_attempts(
+            db, exercise_id=exercise_id, user_id=current_user.id,
+        )
+        if classroom_course_service.needs_support_plan(a.score_pct)
+    )
+    if classroom_course_service.needs_support_plan(
+        submission.score_pct, kind=exercise.kind, failed_attempts=echecs,
+    ):
         background_tasks.add_task(
             _plan_accompagnement_en_arriere_plan,
             exercise.classroom_id, current_user.id, exercise.subject,
@@ -1343,4 +1357,32 @@ def get_my_difficulty(
             resources=[StudentResourceItem(**r) for r in item["resources"]],
         )
         for item in classroom_exercise_service.get_my_difficulty(db, user_id=current_user.id)
+    ]
+
+
+@router.get("/my-next-steps", response_model=list[MyNextStepsItem])
+def get_my_next_steps(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    """Ce que l'eleve connecte a valide, et les opportunites reelles que cela ouvre.
+
+    Pendant de /my-difficulty. Un eleve qui REUSSIT ne recevait rien jusqu'ici :
+    le parcours s'arretait sur la note, au moment ou il est pourtant le plus
+    disponible pour la suite.
+
+    Pont entre Malayka Institution et le reste de la plateforme — ce qui est
+    demontre en evaluation devient un critere de recherche d'offres reelles.
+
+    Comme /my-difficulty : aucun parametre d'identifiant, on ne lit que
+    current_user. Demander les acquis d'un autre eleve est impossible.
+    """
+    return [
+        MyNextStepsItem(
+            classroom_id=item["classroom_id"],
+            classroom_name=item["classroom_name"],
+            mastered_topics=[StudentMasteredTopic(**m) for m in item["mastered_topics"]],
+            opportunities=[StudentResourceItem(**o) for o in item["opportunities"]],
+        )
+        for item in classroom_exercise_service.get_my_next_steps(db, user_id=current_user.id)
     ]
