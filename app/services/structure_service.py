@@ -125,12 +125,15 @@ def create_classroom(db: Session, structure_id: uuid.UUID, name: str) -> Classro
     return classroom
 
 
-def list_classrooms(db: Session, structure_id: uuid.UUID) -> list[Classroom]:
-    return list(
-        db.execute(
-            select(Classroom).where(Classroom.structure_id == structure_id)
-        ).scalars().all()
-    )
+def list_classrooms(
+    db: Session, structure_id: uuid.UUID, *, include_archived: bool = False,
+) -> list[Classroom]:
+    """Salles actives par defaut. include_archived=True permet de les retrouver
+    pour les desarchiver — sans cela l'archivage serait a sens unique."""
+    stmt = select(Classroom).where(Classroom.structure_id == structure_id)
+    if not include_archived:
+        stmt = stmt.where(Classroom.archived_at.is_(None))
+    return list(db.execute(stmt).scalars().all())
 
 
 # ── Invitation enseignant ─────────────────────────────────────────────────────
@@ -393,6 +396,7 @@ def list_members(db: Session, classroom_id: uuid.UUID) -> list[ClassroomMembersh
             select(ClassroomMembership).where(
                 ClassroomMembership.classroom_id == classroom_id,
                 ClassroomMembership.status == MembershipStatus.accepted,
+                ClassroomMembership.removed_at.is_(None),
             )
         ).scalars().all()
     )
@@ -429,3 +433,68 @@ def reject_join_request(db: Session, membership_id: uuid.UUID) -> ClassroomMembe
     membership.status = MembershipStatus.rejected
     db.flush()
     return membership
+
+
+# ── Cycle de vie : archivage et retrait ───────────────────────────────────────
+#
+# Aucune suppression reelle. Une suppression detruirait les progressions, les
+# resultats et l'historique des rapports d'impact ; elle rendrait surtout une
+# erreur d'archivage definitive, ce qui recreerait le probleme qu'on corrige.
+# Toutes ces operations sont donc reversibles.
+
+
+def archive_classroom(db: Session, classroom_id: uuid.UUID, *, archived: bool = True) -> Classroom:
+    """Archive ou desarchive une salle. Ses cours et exercices restent lies ;
+    ils disparaissent des listes via le filtre sur Classroom.archived_at."""
+    classroom = db.get(Classroom, classroom_id)
+    if not classroom:
+        raise NotFoundError("Classroom")
+    classroom.archived_at = datetime.now(timezone.utc) if archived else None
+    db.flush()
+    return classroom
+
+
+def remove_member(
+    db: Session, *, classroom_id: uuid.UUID, user_id: uuid.UUID, removed: bool = True,
+) -> ClassroomMembership:
+    """Retire un eleve de la salle, ou annule ce retrait.
+
+    Ses cours et exercices deja recus lui restent : les destinataires sont
+    materialises a l'envoi, precisement pour que la progression survive au
+    depart (cf. ClassroomCourseRecipient). Il cesse simplement de figurer parmi
+    les membres et de recevoir les envois a venir.
+    """
+    membership = db.execute(
+        select(ClassroomMembership).where(
+            ClassroomMembership.classroom_id == classroom_id,
+            ClassroomMembership.user_id == user_id,
+        )
+    ).scalar_one_or_none()
+    if not membership:
+        raise NotFoundError("Membre")
+    membership.removed_at = datetime.now(timezone.utc) if removed else None
+    db.flush()
+    return membership
+
+
+def remove_classroom_teacher(
+    db: Session, *, classroom_id: uuid.UUID, user_id: uuid.UUID, removed: bool = True,
+) -> ClassroomTeacher:
+    """Retire l'affectation d'un enseignant a cette salle, ou la retablit.
+
+    Son appartenance a la structure (StructureMember) n'est pas touchee : c'est
+    l'acces a CETTE salle qui est retire, pas le compte.
+    """
+    assignment = db.execute(
+        select(ClassroomTeacher)
+        .join(StructureMember, StructureMember.id == ClassroomTeacher.structure_member_id)
+        .where(
+            ClassroomTeacher.classroom_id == classroom_id,
+            StructureMember.user_id == user_id,
+        )
+    ).scalar_one_or_none()
+    if not assignment:
+        raise NotFoundError("Affectation enseignant")
+    assignment.removed_at = datetime.now(timezone.utc) if removed else None
+    db.flush()
+    return assignment

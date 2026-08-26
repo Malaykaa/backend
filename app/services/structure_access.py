@@ -58,7 +58,12 @@ def get_accessible_classroom_ids(db: Session, user_id: uuid.UUID) -> set[uuid.UU
     """Toutes les Classroom que cet utilisateur a le droit de consulter/gérer.
 
     - super_admin d'une structure → toutes les Classroom de cette structure.
-    - teacher → uniquement ses Classroom assignées (ClassroomTeacher).
+    - teacher → uniquement ses Classroom assignées (ClassroomTeacher) et non retirées.
+
+    Les salles ARCHIVÉES restent volontairement accessibles : sans cela, les
+    désarchiver deviendrait impossible et l'archivage redeviendrait irréversible
+    — exactement le défaut qu'il corrige. Ce sont les listes (list_classrooms)
+    qui les masquent par défaut, pas le contrôle d'accès.
     """
     super_admin_structure_ids = set(
         db.execute(
@@ -84,6 +89,8 @@ def get_accessible_classroom_ids(db: Session, user_id: uuid.UUID) -> set[uuid.UU
             .where(
                 StructureMember.user_id == user_id,
                 StructureMember.role == StructureMemberRole.teacher,
+                # Une affectation retiree ne donne plus acces a la salle.
+                ClassroomTeacher.removed_at.is_(None),
             )
         ).scalars().all()
     )

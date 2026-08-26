@@ -140,7 +140,10 @@ def update_exercise_questions(
 def list_exercises(
     db: Session, classroom_id: uuid.UUID, kind: ClassroomExerciseKind | None = None,
 ) -> list[ClassroomExercise]:
-    stmt = select(ClassroomExercise).where(ClassroomExercise.classroom_id == classroom_id)
+    stmt = select(ClassroomExercise).where(
+        ClassroomExercise.classroom_id == classroom_id,
+        ClassroomExercise.archived_at.is_(None),
+    )
     if kind:
         stmt = stmt.where(ClassroomExercise.kind == kind)
     stmt = stmt.order_by(ClassroomExercise.created_at.desc())
@@ -593,6 +596,21 @@ def get_student_difficulty_detail(
     return {"insufficient_data": student is None, "student": student}
 
 
+def archive_exercise(
+    db: Session, exercise_id: uuid.UUID, *, archived: bool = True,
+) -> ClassroomExercise:
+    """Archive ou desarchive un exercice/evaluation.
+
+    C'est la seule reponse a un exercice envoye par erreur : le contenu est
+    fige des le premier destinataire (cf. update_exercise_questions), il ne
+    peut donc plus etre corrige. L'archiver le retire de la vue des eleves
+    sans detruire les soumissions deja faites, qui continuent d'alimenter le
+    rapport de difficulte. Reversible.
+    """
+    exercise = get_exercise(db, exercise_id)
+    exercise.archived_at = datetime.now(timezone.utc) if archived else None
+    db.flush()
+    return exercise
 def get_my_difficulty(db: Session, *, user_id: uuid.UUID) -> list[dict]:
     """Notions sur lesquelles CET eleve bute, dans chacune de ses salles.
 

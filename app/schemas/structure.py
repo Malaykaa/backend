@@ -52,6 +52,22 @@ class ClassroomResponse(BaseModel):
     created_at: datetime
 
 
+class ArchiveResult(BaseModel):
+    """Resultat d'un archivage/desarchivage. `archived` reflete l'etat APRES
+    l'operation, pour que l'appelant n'ait pas a le deduire."""
+
+    id: str
+    archived: bool
+
+
+class RemoveResult(BaseModel):
+    """Resultat d'un retrait/retablissement de membre. `removed` reflete l'etat
+    APRES l'operation."""
+
+    user_id: str
+    removed: bool
+
+
 class InvitationCreate(BaseModel):
     first_name: str = Field(min_length=1, max_length=100)
     last_name: str = Field(min_length=1, max_length=100)
