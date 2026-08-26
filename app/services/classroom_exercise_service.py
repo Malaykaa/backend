@@ -26,6 +26,7 @@ from app.core.exceptions import BadRequestError, ConflictError, ForbiddenError, 
 from app.models.chat import MessageRole
 from app.models.notification import UserNotification
 from app.models.structure import (
+    Classroom,
     ClassroomCourse,
     ClassroomExercise,
     ClassroomExerciseAnswer,
@@ -442,6 +443,12 @@ def get_results_matrix(
 _MIN_WRONG_RATE = 0.5
 _MIN_QUESTIONS_SEEN = 2
 
+# Au-dessous de ce taux d'erreur, la notion est consideree acquise. Volontairement
+# plus exigeant que le simple complement de _MIN_WRONG_RATE : entre les deux se
+# trouve une zone grise ou l'on ne conclut rien — ni difficulte, ni maitrise.
+# Annoncer une competence acquise engage plus qu'un signalement de difficulte.
+_MAX_WRONG_RATE_MASTERED = 0.2
+
 
 def _normalize_topic(tag: str) -> str:
     """Clé de regroupement des notions, insensible à la casse, aux accents et à
@@ -463,7 +470,16 @@ def _normalize_topic(tag: str) -> str:
     return re.sub(r"\s+", " ", folded).strip()
 
 
-def get_classroom_difficulty_report(db: Session, *, classroom_id: uuid.UUID) -> dict:
+def get_classroom_difficulty_report(
+    db: Session, *, classroom_id: uuid.UUID, subject: str | None = None,
+) -> dict:
+    """Notions les moins maitrisees de la classe, a partir des soumissions reelles.
+
+    `subject` restreint le calcul a une matiere. Necessaire pour alimenter un
+    plan d'evolution, qui est genere PAR MATIERE : sans ce filtre, un plan de
+    maths recevrait les resultats de toutes les matieres de la salle. Par defaut
+    None — le rapport enseignant reste inchange, toutes matieres confondues.
+    """
     rows = db.execute(
         select(
             ClassroomExerciseRecipient.user_id,
@@ -477,6 +493,7 @@ def get_classroom_difficulty_report(db: Session, *, classroom_id: uuid.UUID) -> 
         .where(
             ClassroomExercise.classroom_id == classroom_id,
             ClassroomExerciseSubmission.status == ExerciseSubmissionStatus.submitted,
+            *([ClassroomExercise.subject == subject] if subject is not None else []),
         )
     ).all()
 
@@ -517,11 +534,21 @@ def get_classroom_difficulty_report(db: Session, *, classroom_id: uuid.UUID) -> 
     students = []
     for user_id, topics in by_student.items():
         flagged = []
+        mastered = []
         for topic, results in topics.items():
             wrong_rate = 1 - (sum(results) / len(results))
-            if wrong_rate >= _MIN_WRONG_RATE and len(results) >= _MIN_QUESTIONS_SEEN:
+            if len(results) < _MIN_QUESTIONS_SEEN:
+                # Trop peu de questions vues pour conclure dans un sens ou dans
+                # l'autre : ni difficulte avereee, ni maitrise demontree.
+                continue
+            if wrong_rate >= _MIN_WRONG_RATE:
                 flagged.append({
                     "topic_tag": _label(topic), "wrong_rate": round(wrong_rate, 2),
+                    "questions_seen": len(results),
+                })
+            elif wrong_rate <= _MAX_WRONG_RATE_MASTERED:
+                mastered.append({
+                    "topic_tag": _label(topic), "success_rate": round(1 - wrong_rate, 2),
                     "questions_seen": len(results),
                 })
 
@@ -541,7 +568,7 @@ def get_classroom_difficulty_report(db: Session, *, classroom_id: uuid.UUID) -> 
 
         students.append({
             "user_id": user_id, "user_name": user_name, "avg_score_pct": avg_score_pct,
-            "flagged_topics": flagged, "trend": trend,
+            "flagged_topics": flagged, "mastered_topics": mastered, "trend": trend,
         })
 
     topics_report = [
@@ -559,8 +586,10 @@ def get_classroom_difficulty_report(db: Session, *, classroom_id: uuid.UUID) -> 
     return {"students": students, "topics": topics_report, "insufficient_data": False}
 
 
-def get_student_difficulty_detail(db: Session, *, classroom_id: uuid.UUID, user_id: uuid.UUID) -> dict:
-    report = get_classroom_difficulty_report(db, classroom_id=classroom_id)
+def get_student_difficulty_detail(
+    db: Session, *, classroom_id: uuid.UUID, user_id: uuid.UUID, subject: str | None = None,
+) -> dict:
+    report = get_classroom_difficulty_report(db, classroom_id=classroom_id, subject=subject)
     if report["insufficient_data"]:
         return {"insufficient_data": True, "student": None}
     student = next((s for s in report["students"] if s["user_id"] == user_id), None)
@@ -582,3 +611,105 @@ def archive_exercise(
     exercise.archived_at = datetime.now(timezone.utc) if archived else None
     db.flush()
     return exercise
+def get_my_difficulty(db: Session, *, user_id: uuid.UUID) -> list[dict]:
+    """Notions sur lesquelles CET eleve bute, dans chacune de ses salles.
+
+    Le diagnostic par notion existait deja, mais uniquement cote enseignant
+    (routes protegees par _require_classroom_admin). Le systeme savait donc
+    qu'un eleve bloquait sur une notion precise sans jamais le lui dire : il ne
+    voyait qu'un score. C'est ce retour qui manquait pour qu'un resultat mene a
+    une action plutot qu'a un constat.
+
+    Ne renvoie QUE les donnees de cet eleve. Volontairement pas le champ
+    `topics` du rapport de classe, qui agrege les resultats des autres eleves.
+
+    Le seuil de signalement (_MIN_QUESTIONS_SEEN, _MIN_WRONG_RATE) est celui du
+    rapport enseignant : on ne declare pas une notion "non maitrisee" sur un
+    echec isole, a plus forte raison quand c'est l'eleve qui le lit.
+    """
+    memberships = list(
+        db.execute(
+            select(ClassroomMembership.classroom_id).where(
+                ClassroomMembership.user_id == user_id,
+                ClassroomMembership.status == MembershipStatus.accepted,
+            )
+        ).scalars().all()
+    )
+
+    items: list[dict] = []
+    for classroom_id in memberships:
+        detail = get_student_difficulty_detail(db, classroom_id=classroom_id, user_id=user_id)
+        student = detail.get("student")
+        if not student:
+            continue
+        classroom = db.get(Classroom, classroom_id)
+        flagged = student["flagged_topics"]
+
+        # Ressources reelles de la base correspondant aux notions ratees : ce
+        # sont des lignes de scraped_offers (types formation et resource),
+        # jamais du contenu genere. Liste vide si la base n'a rien de pertinent.
+        from app.services import scraped_offer_service  # noqa: PLC0415
+
+        user = db.get(User, user_id)
+        country = user.profile.country if user and user.profile else None
+        resources = scraped_offer_service.search_resources_for_topics(
+            db, [f["topic_tag"] for f in flagged], country=country,
+        )
+
+        items.append({
+            "classroom_id": str(classroom_id),
+            "classroom_name": classroom.name if classroom else "",
+            "avg_score_pct": student["avg_score_pct"],
+            "trend": student["trend"],
+            "flagged_topics": flagged,
+            "resources": resources,
+        })
+    return items
+
+
+def get_my_next_steps(db: Session, *, user_id: uuid.UUID) -> list[dict]:
+    """Ce que l'eleve a valide, et les opportunites reelles que cela lui ouvre.
+
+    Pendant de get_my_difficulty. Jusqu'ici un eleve qui REUSSISSAIT ne recevait
+    rien : le parcours s'arretait sur la note, au moment ou il est pourtant le
+    plus disponible pour la suite.
+
+    C'est aussi le pont entre Malayka Institution et le reste de la plateforme —
+    ce qui est demontre en evaluation devient un critere de recherche d'offres
+    reelles. Rien n'est genere : uniquement des lignes de scraped_offers.
+    """
+    from app.services import scraped_offer_service  # noqa: PLC0415
+
+    memberships = list(
+        db.execute(
+            select(ClassroomMembership.classroom_id).where(
+                ClassroomMembership.user_id == user_id,
+                ClassroomMembership.status == MembershipStatus.accepted,
+            )
+        ).scalars().all()
+    )
+
+    user = db.get(User, user_id)
+    country = user.profile.country if user and user.profile else None
+
+    items: list[dict] = []
+    for classroom_id in memberships:
+        detail = get_student_difficulty_detail(db, classroom_id=classroom_id, user_id=user_id)
+        student = detail.get("student")
+        if not student:
+            continue
+        mastered = student.get("mastered_topics") or []
+        if not mastered:
+            # Rien de demontre : on n'annonce pas d'acquis, et donc pas de suite.
+            continue
+
+        classroom = db.get(Classroom, classroom_id)
+        items.append({
+            "classroom_id": str(classroom_id),
+            "classroom_name": classroom.name if classroom else "",
+            "mastered_topics": mastered,
+            "opportunities": scraped_offer_service.search_opportunities_for_skills(
+                db, [m["topic_tag"] for m in mastered], country=country,
+            ),
+        })
+    return items

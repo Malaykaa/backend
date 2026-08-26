@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -26,6 +26,7 @@ from app.models.chat import MessageRole
 from app.models.notification import UserNotification
 from app.models.user import User
 from app.models.structure import (
+    ClassroomExerciseKind,
     Classroom,
     ClassroomCourse,
     ClassroomCourseKind,
@@ -476,6 +477,31 @@ def _build_progress_summary(
             status = progress_by_step.get(step.id, ClassroomStepStatus.todo)
             mark = "[terminé]" if status == ClassroomStepStatus.done else "[non terminé]"
             lines.append(f"- {step.label} {mark}")
+
+    # Résultats réels aux exercices — import local pour éviter un cycle
+    # (classroom_exercise_service importe déjà des éléments de ce module).
+    from app.services import classroom_exercise_service  # noqa: PLC0415
+
+    detail = classroom_exercise_service.get_student_difficulty_detail(
+        db, classroom_id=classroom_id, user_id=user_id, subject=subject,
+    )
+    student = detail.get("student")
+    if student:
+        tendance = f", tendance {student['trend']}" if student.get("trend") else ""
+        lines.append(
+            f"\nRésultats aux exercices — moyenne {student['avg_score_pct']}%{tendance}"
+        )
+        flagged = student.get("flagged_topics") or []
+        if flagged:
+            lines.append("Notions les moins maîtrisées (à traiter en priorité) :")
+            for f in flagged:
+                lines.append(
+                    f"- {f['topic_tag']} : {round(f['wrong_rate'] * 100)}% d'erreurs "
+                    f"sur {f['questions_seen']} questions"
+                )
+        else:
+            lines.append("Aucune notion en difficulté marquée à ce stade.")
+
     return "\n".join(lines)
 
 
@@ -671,3 +697,114 @@ def archive_course(db: Session, course_id: uuid.UUID, *, archived: bool = True) 
     course.archived_at = datetime.now(timezone.utc) if archived else None
     db.flush()
     return course
+# ── Plan d'accompagnement declenche par un resultat ──────────────────────────
+
+# Sous ce score, l'evaluation est consideree ratee et un plan d'accompagnement
+# est declenche automatiquement. Les objectifs du cours SONT les evaluations :
+# rater la moitie des points, c'est ne pas avoir atteint l'objectif.
+SUPPORT_PLAN_SCORE_THRESHOLD = 50
+
+# Delai minimal entre deux plans automatiques pour un meme couple
+# (eleve, matiere). Sans lui, un eleve qui enchaine plusieurs exercices rates
+# recevrait un plan a chaque soumission — spam pour lui, facture LLM pour vous.
+SUPPORT_PLAN_COOLDOWN_DAYS = 7
+
+
+# Un exercice est un ENTRAINEMENT a tentatives illimitees : rater la premiere
+# fois en est le principe meme. Declencher une remediation la serait premature.
+# On attend donc un echec repete, signe qu'un eleve est reellement bloque et non
+# simplement en train d'apprendre. Une evaluation, elle, est notee et a tentative
+# unique : la rater signifie que l'objectif n'est pas atteint.
+SUPPORT_PLAN_MIN_FAILED_ATTEMPTS_EXERCISE = 2
+
+
+def needs_support_plan(
+    score_pct: int | None,
+    *,
+    kind: ClassroomExerciseKind | None = None,
+    failed_attempts: int = 1,
+) -> bool:
+    """Regle unique du declenchement, isolee pour etre testable et modifiable.
+
+    `kind` et `failed_attempts` sont optionnels : sans eux, la regle se ramene au
+    seul seuil de score, ce qui reste le comportement attendu pour une evaluation.
+    """
+    if score_pct is None or score_pct >= SUPPORT_PLAN_SCORE_THRESHOLD:
+        return False
+    if kind == ClassroomExerciseKind.exercise:
+        return failed_attempts >= SUPPORT_PLAN_MIN_FAILED_ATTEMPTS_EXERCISE
+    return True
+
+
+def _plan_recent_existe(
+    db: Session, *, classroom_id: uuid.UUID, user_id: uuid.UUID, subject: str | None,
+) -> bool:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=SUPPORT_PLAN_COOLDOWN_DAYS)
+    row = db.execute(
+        select(ClassroomCourse.id)
+        .join(ClassroomCourseRecipient, ClassroomCourseRecipient.course_id == ClassroomCourse.id)
+        .where(
+            ClassroomCourse.classroom_id == classroom_id,
+            ClassroomCourse.kind == ClassroomCourseKind.evolution_plan,
+            ClassroomCourse.subject == subject,
+            ClassroomCourseRecipient.user_id == user_id,
+            ClassroomCourse.created_at >= cutoff,
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+    return row is not None
+
+
+async def generate_support_plan_for_student(
+    db: Session, *, classroom_id: uuid.UUID, user_id: uuid.UUID, subject: str | None,
+) -> ClassroomCourse | None:
+    """Genere et envoie UN plan d'accompagnement, pour un eleve et une matiere.
+
+    Declenche par un resultat insuffisant, non par une action de l'enseignant :
+    c'est ce qui fait passer le systeme de "voici ta note" a "voici la suite".
+
+    created_by_user_id reste NULL — cela distingue en base un plan automatique
+    d'un plan lance par un enseignant, sans champ supplementaire.
+
+    Retourne None si un plan recent existe deja (cf. cooldown) ou si l'eleve n'a
+    recu aucun cours dans cette matiere : sans progression a resumer, l'agent
+    n'aurait rien sur quoi s'appuyer.
+    """
+    if _plan_recent_existe(db, classroom_id=classroom_id, user_id=user_id, subject=subject):
+        logger.info(
+            "[Plan auto] skip user=%s subject=%r — plan recent deja envoye", user_id, subject,
+        )
+        return None
+
+    summary = _build_progress_summary(
+        db, classroom_id=classroom_id, user_id=user_id, subject=subject,
+    )
+    if "[terminé]" not in summary and "[non terminé]" not in summary:
+        logger.info("[Plan auto] skip user=%s subject=%r — aucun cours recu", user_id, subject)
+        return None
+
+    agent = EvolutionPlanAgent(get_llm_provider())
+    # user_id de l'eleve, et non de l'enseignant : le contexte agent doit porter
+    # celui que le plan concerne.
+    response = await agent.process(AgentContext(user_id=user_id, message=summary))
+
+    plan = ClassroomCourse(
+        id=uuid.uuid4(), classroom_id=classroom_id, created_by_user_id=None,
+        title=f"Plan d'accompagnement — {subject or 'Général'}",
+        subject=subject, kind=ClassroomCourseKind.evolution_plan,
+        summary=response.explanation[:300], explanation=response.explanation,
+        sources=[s.model_dump() for s in response.sources] if response.sources else None,
+        suggestions=[s.model_dump() for s in response.suggestions] if response.suggestions else None,
+    )
+    db.add(plan)
+    db.flush()
+    for step in response.steps:
+        db.add(ClassroomCourseStep(
+            id=uuid.uuid4(), course_id=plan.id,
+            label=step.label, description=step.description, order=step.order,
+        ))
+    db.flush()
+    _materialize_recipient(db, plan, user_id)
+    db.commit()
+    logger.info("[Plan auto] plan envoye a user=%s subject=%r", user_id, subject)
+    return plan
